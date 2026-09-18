@@ -1,0 +1,13 @@
+# 3D 打印服务管理系统 · Windows 依赖（Linux 请用 requirements.txt）
+# 差异：Windows 无法安装 gunicorn（依赖 fcntl），改用 waitress 作为生产级 WSGI 服务器。
+Flask==3.0.3
+Flask-SQLAlchemy==3.1.1
+Flask-Cors==4.0.1
+PyMySQL==1.1.1
+cryptography==43.0.3
+PyJWT==2.9.0
+requests==2.32.3
+beautifulsoup4==4.12.3
+python-dotenv==1.0.1
+python-docx==1.2.0
+waitress==3.0.0

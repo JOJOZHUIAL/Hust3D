@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# 敏感配置与本地环境
+.env
+
+# 上传文件（含用户 STL 与签名，不入库版本控制）
+uploads/
+
+# 冒烟测试产生的本地 SQLite 文件
+*.db
+
+# 编辑器
+.vscode/
+.idea/
