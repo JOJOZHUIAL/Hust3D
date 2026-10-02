@@ -12,6 +12,7 @@
             {{ STATUS[detail.status]?.text }}
           </van-tag>
           <van-tag v-if="detail.feedback_url" color="#07c160" size="large" round>已反馈</van-tag>
+          <van-tag v-else-if="detail.status === 'completed'" color="#ff976a" size="large" round>未反馈</van-tag>
         </div>
         <div class="apply-no">{{ detail.apply_no }}</div>
       </div>
@@ -135,6 +136,7 @@ import { showConfirmDialog, showSuccessToast, showImagePreview } from 'vant'
 import { getApplicationDetail, submitFeedback, exportApplicationForm, downloadBlob } from '../api/application'
 import { updateApplicationStatus } from '../api/admin'
 import { useAuthStore } from '../store/auth'
+import { assetUrl } from '../utils/server'
 import { STATUS, PURPOSE_TEXT } from '../utils/constants'
 
 const route = useRoute()
@@ -159,11 +161,6 @@ async function load() {
   } finally {
     loading.value = false
   }
-}
-
-function assetUrl(path) {
-  // 后端返回的是相对路径（uploads/...），补上根路径
-  return path.startsWith('http') ? path : '/' + path
 }
 
 function downloadFile() {

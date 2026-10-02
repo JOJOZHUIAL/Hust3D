@@ -7,6 +7,10 @@ rem 日常使用只需访问 http://127.0.0.1:5000（后端窗口开着即可）
 rem ===============================================
 
 cd /d %~dp0backend
+if not exist "certs\cert.pem" (
+  echo 首次运行：生成局域网 HTTPS 证书...
+  .venv\Scripts\python.exe scripts\generate_cert.py
+)
 start "3D打印-后端(5000)" cmd /k ".venv\Scripts\python.exe app.py"
 
 cd /d %~dp0frontend

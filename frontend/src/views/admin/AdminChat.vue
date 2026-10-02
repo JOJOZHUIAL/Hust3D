@@ -1,6 +1,6 @@
 <template>
   <div class="page admin page--wide">
-    <van-nav-bar title="留言消息" left-arrow fixed placeholder @click-left="$router.back()">
+    <van-nav-bar title="留言消息" left-arrow fixed placeholder @click-left="$router.replace('/admin')">
       <template #right>
         <van-icon name="plus" size="20" @click="openContacts" />
       </template>

@@ -18,6 +18,7 @@ from models import User, ChatMessage
 from utils.response import ok, fail
 from utils.auth import login_required, admin_required
 from services.logger import log_action
+from services.notify import notify_user, notify_admins
 
 bp = Blueprint("chat", __name__)
 
@@ -120,6 +121,14 @@ def send():
         duration=duration,
     )
     db.session.add(msg)
+    # 消息通知：学生发 → 提醒管理员；管理员回 → 提醒学生
+    preview = content if ctype == "text" else {"image": "[图片]", "video": "[视频]",
+                                               "voice": "[语音]", "file": "[文件]"}[ctype]
+    if sender_role == "user":
+        notify_admins("chat", f"{g.user.name or g.user.student_id} 发来新留言",
+                      preview, link="/admin/chat")
+    else:
+        notify_user(owner_id, "chat", "工作室回复了你", preview, link="/chat")
     log_action(g.user.id, "chat_send", f"发送{ctype}消息")
     try:
         db.session.commit()

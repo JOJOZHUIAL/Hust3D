@@ -1,13 +1,6 @@
 <template>
   <div class="page admin page--wide">
-    <van-nav-bar title="管理后台" left-arrow fixed placeholder @click-left="$router.back()">
-      <template #right>
-        <div class="nav-icons">
-          <van-icon name="records" size="20" @click="$router.push('/admin/notices')" />
-          <van-icon name="chat-o" size="20" @click="$router.push('/admin/chat')" />
-        </div>
-      </template>
-    </van-nav-bar>
+    <van-nav-bar title="审批管理" left-arrow fixed placeholder @click-left="$router.replace('/admin')" />
 
     <van-tabs v-model:active="activeTab" sticky @change="load">
       <van-tab title="待审批" name="pending" />
@@ -147,11 +140,6 @@ onMounted(load)
 <style scoped>
 .admin-body {
   padding-top: 8px;
-}
-.nav-icons {
-  display: flex;
-  gap: 16px;
-  align-items: center;
 }
 .admin-card {
   margin: 8px 16px;

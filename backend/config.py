@@ -64,3 +64,10 @@ class Config:
     # —— 站点 ——
     # 前端地址，用于部署 / CORS 等场景（纯网页端，前端与后端分离部署）
     FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
+
+    # —— 局域网 HTTPS（手机摄像头扫码需要安全上下文） ——
+    # certs/ 目录下存在 cert.pem + key.pem 时，后端会额外在 HTTPS_PORT 提供 HTTPS 服务。
+    # 证书用 scripts/generate_cert.bat 生成（自签名，含本机局域网 IP）。
+    SSL_CERT = os.getenv("SSL_CERT", os.path.join(BASE_DIR, "certs", "cert.pem"))
+    SSL_KEY = os.getenv("SSL_KEY", os.path.join(BASE_DIR, "certs", "key.pem"))
+    HTTPS_PORT = int(os.getenv("HTTPS_PORT", "5443"))

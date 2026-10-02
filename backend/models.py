@@ -193,6 +193,99 @@ class Announcement(db.Model):
         return d
 
 
+class Consumable(db.Model):
+    """耗材台账：条形码唯一标识一件耗材（如一卷 PLA），记录当前库存。"""
+
+    __tablename__ = "consumables"
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    barcode = db.Column(db.String(64), unique=True, nullable=False, index=True, comment="条形码（一串数字）")
+    name = db.Column(db.String(128), nullable=False, comment="耗材名称")
+    material = db.Column(db.String(64), nullable=True, comment="材质（如 PLA/PETG/树脂）")
+    color = db.Column(db.String(64), nullable=True, comment="颜色")
+    unit = db.Column(db.String(16), nullable=False, default="卷", comment="计量单位")
+    quantity = db.Column(db.Integer, nullable=False, default=0, comment="当前库存数量")
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.now, comment="首次入库时间")
+    updated_at = db.Column(db.DateTime, nullable=False, default=datetime.now, onupdate=datetime.now)
+
+    logs = db.relationship("ConsumableLog", backref="consumable", lazy=True)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "barcode": self.barcode,
+            "name": self.name,
+            "material": self.material,
+            "color": self.color,
+            "unit": self.unit,
+            "quantity": self.quantity,
+            "created_at": _fmt(self.created_at),
+            "updated_at": _fmt(self.updated_at),
+        }
+
+
+class ConsumableLog(db.Model):
+    """耗材流水：入库/拆封等操作记录，进出有据可查。"""
+
+    __tablename__ = "consumable_logs"
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    consumable_id = db.Column(db.Integer, db.ForeignKey("consumables.id"), nullable=False, index=True)
+    action = db.Column(db.String(8), nullable=False, comment="in=入库 open=拆封")
+    quantity_change = db.Column(db.Integer, nullable=False, comment="数量变动（入库+n / 拆封-1）")
+    quantity_after = db.Column(db.Integer, nullable=False, comment="操作后库存")
+    operator_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True, comment="操作人（users.id）")
+    note = db.Column(db.String(255), nullable=True, comment="备注")
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.now, comment="操作时间")
+
+    operator = db.relationship("User", lazy=True)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "consumable_id": self.consumable_id,
+            "barcode": self.consumable.barcode if self.consumable else None,
+            "name": self.consumable.name if self.consumable else None,
+            "material": self.consumable.material if self.consumable else None,
+            "color": self.consumable.color if self.consumable else None,
+            "unit": self.consumable.unit if self.consumable else None,
+            "action": self.action,
+            "quantity_change": self.quantity_change,
+            "quantity_after": self.quantity_after,
+            "operator": self.operator.name if self.operator else None,
+            "note": self.note,
+            "created_at": _fmt(self.created_at),
+        }
+
+
+class Notification(db.Model):
+    """站内通知：审批结果 / 新留言 / 新申请 / 耗材进出等事件的提醒，全员各自收各自的。"""
+
+    __tablename__ = "notifications"
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True,
+                        comment="接收人（users.id）")
+    ntype = db.Column(db.String(16), nullable=False,
+                      comment="类型 approval=审批结果 apply=新申请 chat=留言 consumable=耗材")
+    title = db.Column(db.String(128), nullable=False, comment="标题")
+    body = db.Column(db.String(255), nullable=True, comment="详情（可空）")
+    link = db.Column(db.String(128), nullable=True, comment="点击跳转的前端路径")
+    is_read = db.Column(db.Boolean, nullable=False, default=False, comment="是否已读")
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.now)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "ntype": self.ntype,
+            "title": self.title,
+            "body": self.body,
+            "link": self.link,
+            "is_read": self.is_read,
+            "created_at": _fmt(self.created_at),
+        }
+
+
 class OperationLog(db.Model):
     """操作日志表：记录关键操作（登录、提交、审批、状态变更等）。"""
 

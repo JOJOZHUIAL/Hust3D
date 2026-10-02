@@ -9,8 +9,14 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@capacitor/android": "^8.5.2",
+    "@capacitor/cli": "^8.5.2",
+    "@capacitor/core": "^8.5.2",
+    "@capacitor/local-notifications": "^8.3.1",
+    "@undecaf/zbar-wasm": "^0.11.0",
     "axios": "^1.6.8",
     "pinia": "^2.1.7",
+    "qrcode": "^1.5.4",
     "signature_pad": "^4.1.7",
     "vant": "^4.8.11",
     "vue": "^3.4.27",

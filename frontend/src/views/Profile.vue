@@ -12,6 +12,7 @@
     </div>
 
     <van-cell-group inset>
+      <van-cell v-if="isNative" title="服务器地址" :value="serverShort" icon="desktop-o" is-link @click="editServer" />
       <van-cell title="我的申请" icon="orders-o" is-link to="/applications" />
       <van-cell title="使用指南" icon="question-o" is-link @click="onGuide" />
       <van-cell
@@ -20,7 +21,7 @@
         is-link
         :to="isAdmin ? '/admin/chat' : '/chat'"
       />
-      <van-cell v-if="isAdmin" title="管理后台" icon="setting-o" is-link to="/admin/pending" />
+      <van-cell v-if="isAdmin" title="管理后台" icon="setting-o" is-link to="/admin" />
     </van-cell-group>
 
     <div class="logout-btn">
@@ -38,6 +39,7 @@ import { showToast, showConfirmDialog } from 'vant'
 import { getUserInfo, getQuota } from '../api/user'
 import { logout } from '../api/auth'
 import { useAuthStore } from '../store/auth'
+import { isNative as isNativePlatform, getServerBase, setServerBase } from '../utils/server'
 import TabBar from '../components/TabBar.vue'
 
 const router = useRouter()
@@ -45,6 +47,25 @@ const auth = useAuthStore()
 const user = computed(() => auth.user)
 const isAdmin = computed(() => auth.isAdmin)
 const remaining = ref(0)
+
+// App 模式：查看/修改后端服务器地址
+const isNative = isNativePlatform()
+const serverShort = computed(() => getServerBase() || '未设置')
+
+function editServer() {
+  showConfirmDialog({
+    title: '服务器地址',
+    message: getServerBase() || '尚未设置',
+    showCancelButton: true,
+    confirmButtonText: '清除重设',
+  })
+    .then(() => {
+      setServerBase('')
+      showSuccessToast('已清除，请重新登录并填写服务器地址')
+      setTimeout(() => location.reload(), 800)
+    })
+    .catch(() => {})
+}
 
 const avatarText = computed(() => (user.value?.name ? user.value.name[0] : '3D'))
 

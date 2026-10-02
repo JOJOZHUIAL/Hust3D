@@ -20,6 +20,7 @@
           <template #value>
             <van-tag :color="STATUS[item.status]?.color">{{ STATUS[item.status]?.text }}</van-tag>
             <van-tag v-if="item.feedback_url" color="#07c160">已反馈</van-tag>
+            <van-tag v-else-if="item.status === 'completed'" color="#ff976a">未反馈</van-tag>
           </template>
         </van-cell>
       </van-cell-group>

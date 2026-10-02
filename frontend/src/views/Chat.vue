@@ -156,6 +156,7 @@ import { showFailToast, showImagePreview } from 'vant'
 import { sendChatMessage, getChatMessages } from '../api/chat'
 import { downloadBlob } from '../api/application'
 import { useAuthStore } from '../store/auth'
+import { assetUrl as serverAssetUrl } from '../utils/server'
 
 const route = useRoute()
 const router = useRouter()
@@ -202,10 +203,8 @@ function avatarText(m) {
   return adminMode.value ? (peer.value?.name?.[0] || '学') : '工'
 }
 
-function assetUrl(path) {
-  if (!path) return ''
-  return path.startsWith('http') ? path : '/' + path
-}
+// App 模式下资源指向服务器（utils/server 统一处理）
+const assetUrl = serverAssetUrl
 
 function fmtSize(n) {
   if (!n && n !== 0) return ''

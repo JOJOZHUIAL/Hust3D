@@ -16,11 +16,13 @@ const routes = [
   { path: '/profile', name: 'profile', component: () => import('../views/Profile.vue') },
   { path: '/chat', name: 'chat', component: () => import('../views/Chat.vue') },
   { path: '/notices', name: 'notice-list', component: () => import('../views/NoticeList.vue') },
+  { path: '/notifications', name: 'notifications', component: () => import('../views/Notifications.vue') },
   {
     path: '/notice/:id',
     name: 'notice-detail',
     component: () => import('../views/NoticeDetail.vue'),
   },
+  { path: '/admin', name: 'admin-home', component: () => import('../views/admin/AdminHome.vue') },
   { path: '/admin/pending', name: 'admin-pending', component: () => import('../views/admin/AdminPending.vue') },
   { path: '/admin/chat', name: 'admin-chat', component: () => import('../views/admin/AdminChat.vue') },
   {
@@ -32,6 +34,11 @@ const routes = [
     path: '/admin/notices',
     name: 'admin-notices',
     component: () => import('../views/admin/AdminNotices.vue'),
+  },
+  {
+    path: '/admin/consumables',
+    name: 'admin-consumables',
+    component: () => import('../views/admin/Consumables.vue'),
   },
 ]
 

@@ -11,6 +11,18 @@
 
       <van-cell-group inset class="login-form">
         <van-field
+          v-if="isNative"
+          v-model="serverBase"
+          name="server"
+          label="服务器"
+          placeholder="如 http://192.168.1.150:5000"
+          clearable
+        >
+          <template #left-icon>
+            <van-icon name="desktop-o" />
+          </template>
+        </van-field>
+        <van-field
           v-model="studentId"
           name="student_id"
           label="学号"
@@ -71,6 +83,7 @@ import clubLogo from '../assets/login/club-logo.jpg'
 import hustRound from '../assets/login/hust-round.png'
 import hustWide from '../assets/login/hust-wide.png'
 import campusImg from '../assets/login/campus.jpg'
+import { isNative as isNativePlatform, getServerBase, setServerBase } from '../utils/server'
 
 document.documentElement.style.setProperty('--login-bg', `url(${campusImg})`)
 
@@ -80,13 +93,20 @@ const studentId = ref('')
 const password = ref('')
 const loading = ref(false)
 
+// App 模式：登录页提供服务器地址（一次设置，长期记住）
+const isNative = isNativePlatform()
+const serverBase = ref(getServerBase() || (isNative ? 'http://192.168.1.150:5000' : ''))
+
+onMounted(() => {
+  if (isNative) setServerBase(serverBase.value)
+  refreshCaptcha()
+})
+
 // 验证码相关
 const captchaRequired = ref(false)
 const captchaId = ref('')
 const captchaImg = ref('')
 const captchaCode = ref('')
-
-onMounted(refreshCaptcha)
 
 async function refreshCaptcha() {
   try {
@@ -119,6 +139,7 @@ async function onSubmit() {
 
   loading.value = true
   try {
+    if (isNative) setServerBase(serverBase.value)
     const payload = {
       student_id: studentId.value.trim(),
       password: password.value,

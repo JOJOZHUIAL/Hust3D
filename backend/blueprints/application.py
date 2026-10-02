@@ -19,6 +19,7 @@ from utils.response import ok, fail
 from utils.auth import login_required
 from services.quota import ensure_quota
 from services.logger import log_action
+from services.notify import notify_admins
 from services.form_export import generate_application_docx
 
 bp = Blueprint("application", __name__)
@@ -179,6 +180,12 @@ def submit():
     # 同步联系方式 / 邮箱
     user.phone = phone
     user.email = email
+
+    # 提醒全部管理员有新申请
+    preview = f"{material} x{model_count} · {os.path.basename(file_url or '')}"
+    notify_admins("apply", f"新打印申请 {apply_no}",
+                  f"{user.name or user.student_id} 提交了打印申请：{preview}",
+                  link="/admin/pending")
     log_action(user.id, "submit_application", f"提交申请 {apply_no}")
 
     try:

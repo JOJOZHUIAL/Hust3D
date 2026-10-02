@@ -1,16 +1,19 @@
 import axios from 'axios'
 import { showFailToast } from 'vant'
 import { useAuthStore } from '../store/auth'
+import { getServerBase } from '../utils/server'
 
 // 统一 axios 实例。
 // 后端返回格式：{ code, msg, data }，code === 0 表示成功。
+// 浏览器模式同源（''）；安卓 App 模式指向用户设置的服务器地址。
 const request = axios.create({
-  baseURL: '',
+  baseURL: getServerBase(),
   timeout: 60000, // 上传大文件时放宽超时
 })
 
-// 请求拦截：自动附带登录态
+// 请求拦截：自动附带登录态；App 模式下动态指向所设服务器
 request.interceptors.request.use((config) => {
+  config.baseURL = getServerBase()
   const auth = useAuthStore()
   if (auth.token) config.headers.Authorization = `Bearer ${auth.token}`
   return config

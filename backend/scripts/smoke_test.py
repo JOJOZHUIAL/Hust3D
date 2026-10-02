@@ -236,6 +236,78 @@ def main():
     r = c.delete(f"/api/notice/delete/{nid}", headers=headers)
     check("管理员删除公告", r.get_json().get("code") == 0, r.get_json())
 
+    # 7.11 耗材管理：扫码入库 → 拆封扣减 → 流水；学生无权操作
+    BC = "6901234567890"
+    r = c.get(f"/api/consumable/scan?barcode={BC}", headers=headers)
+    check("扫码查询未入库条码", (r.get_json().get("data") or {}).get("exists") is False, r.get_json())
+
+    r = c.post("/api/consumable/stock-in", headers=headers,
+               json={"barcode": BC, "name": "PLA 1.75mm", "material": "PLA", "color": "黑色",
+                     "quantity": 5, "unit": "卷", "note": "2026秋季进货"})
+    check("新耗材入库建档", r.get_json().get("code") == 0 and
+          (r.get_json().get("data") or {}).get("quantity") == 5, r.get_json())
+
+    r = c.post("/api/consumable/stock-in", headers=headers,
+               json={"barcode": BC, "quantity": 3})
+    check("已有耗材累加入库", (r.get_json().get("data") or {}).get("quantity") == 8, r.get_json())
+
+    r = c.post("/api/consumable/open", headers=stu_headers, json={"barcode": BC})
+    check("学生拆封被拦截", r.get_json().get("code") == 403, r.get_json())
+
+    r = c.post("/api/consumable/open", headers=headers, json={"barcode": BC})
+    check("拆封成功库存-1", (r.get_json().get("data") or {}).get("quantity") == 7, r.get_json())
+
+    r = c.get("/api/consumable/logs?limit=10", headers=headers)
+    log_rows = r.get_json().get("data") or []
+    check("流水包含入库与拆封", {x["action"] for x in log_rows} >= {"in", "open"}, log_rows)
+    check("流水记录操作人", any(x["action"] == "open" and x["operator"] for x in log_rows), log_rows)
+
+    r = c.post("/api/consumable/open", headers=headers,
+               json={"barcode": "9999999999999"})
+    check("未入库条码拆封被拦截", r.get_json().get("code") == 1002, r.get_json())
+
+    # 7.12 站内通知：审批/留言/新申请/耗材事件各自生成，学生与管理员各自可见
+    r = c.get("/api/notification/unread-count", headers=stu_headers)
+    n0 = (r.get_json().get("data") or {}).get("count")
+
+    # 学生重新提交申请 → 管理员收到新申请通知
+    r = c.post("/api/application/submit", data=make_data(purpose="research"), headers=stu_headers,
+               content_type="multipart/form-data")
+    check("学生再次提交申请", r.get_json().get("code") == 0, r.get_json())
+    new_id = (r.get_json().get("data") or {}).get("id")
+    after_rows = c.get("/api/notification/list", headers=headers).get_json().get("data") or []
+    check("管理员收到新申请通知", any("新打印申请" in (x.get("title") or "") for x in after_rows), after_rows[:1])
+
+    # 管理员拒绝新申请 → 学生收到通知
+    r = c.post("/api/admin/application/review", headers=headers,
+               json={"id": new_id, "action": "reject", "comment": "模型有破面"})
+    check("审批拒绝成功", r.get_json().get("code") == 0, r.get_json())
+    rows = c.get("/api/notification/list", headers=stu_headers).get_json().get("data") or []
+    check("学生收到审批结果通知", any("未通过" in (x.get("title") or "") for x in rows), rows[:1])
+
+    # 学生发留言 → 管理员收到通知
+    before = len((c.get("/api/notification/list", headers=headers).get_json().get("data")) or [])
+    r = c.post("/api/chat/send", headers=stu_headers,
+               data={"content_type": "text", "content": "模型已修复，重新提交了申请"},
+               content_type="multipart/form-data")
+    after_rows = c.get("/api/notification/list", headers=headers).get_json().get("data") or []
+    check("管理员收到新留言通知", len(after_rows) == before + 1 and "新留言" in after_rows[0]["title"], after_rows[:1])
+
+    # 耗材拆封 → 管理员收到通知
+    r = c.post("/api/consumable/open", headers=headers, json={"barcode": BC})
+    check("耗材拆封成功", r.get_json().get("code") == 0, r.get_json())
+    after_rows = c.get("/api/notification/list", headers=headers).get_json().get("data") or []
+    check("管理员收到拆封通知", any("拆封" in (x.get("title") or "") for x in after_rows), after_rows[:1])
+
+    # 学生未读数增加，全部已读后清零
+    r = c.get("/api/notification/unread-count", headers=stu_headers)
+    n1 = (r.get_json().get("data") or {}).get("count")
+    check("学生未读数增加", (n1 or 0) > (n0 or 0), (n0, n1))
+    r = c.post("/api/notification/read-all", headers=stu_headers)
+    check("全部已读成功", r.get_json().get("code") == 0, r.get_json())
+    r = c.get("/api/notification/unread-count", headers=stu_headers)
+    check("已读后未读清零", (r.get_json().get("data") or {}).get("count") == 0, r.get_json())
+
     # 8. 退出登录
     r = c.post("/api/auth/logout", headers=headers)
     check("logout 返回成功", r.get_json().get("code") == 0)

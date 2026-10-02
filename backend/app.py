@@ -36,6 +36,48 @@ FRONTEND_DIST = os.path.abspath(
 )
 
 
+def _lan_ips():
+    """收集本机局域网 IPv4（主出口 IP 优先）。"""
+    import socket
+
+    ips = []
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ips.append(s.getsockname()[0])
+        s.close()
+    except OSError:
+        pass
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = info[4][0]
+            if not ip.startswith("127.") and ip not in ips:
+                ips.append(ip)
+    except OSError:
+        pass
+    return ips
+
+
+def _start_https(app):
+    """在独立线程额外跑一个 HTTPS 服务（手机摄像头扫码用，不影响 HTTP 端口）。"""
+    import threading
+
+    port = app.config["HTTPS_PORT"]
+
+    def run():
+        try:
+            app.run(
+                host="0.0.0.0", port=port,
+                ssl_context=(app.config["SSL_CERT"], app.config["SSL_KEY"]),
+                debug=False, use_reloader=False,
+            )
+        except OSError as e:
+            print(f"[HTTPS] {port} 端口启动失败（可能被占用）：{e}")
+
+    threading.Thread(target=run, daemon=True, name="https-server").start()
+    print(f" * HTTPS 已启用：https://<本机IP>:{port}（手机扫码用，自签名证书需点『继续访问』）")
+
+
 def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
@@ -60,6 +102,8 @@ def create_app():
     from blueprints.admin import bp as admin_bp
     from blueprints.chat import bp as chat_bp
     from blueprints.notice import bp as notice_bp
+    from blueprints.consumable import bp as consumable_bp
+    from blueprints.notification import bp as notification_bp
 
     app.register_blueprint(auth_bp, url_prefix="/api/auth")
     app.register_blueprint(user_bp, url_prefix="/api/user")
@@ -67,11 +111,27 @@ def create_app():
     app.register_blueprint(admin_bp, url_prefix="/api/admin")
     app.register_blueprint(chat_bp, url_prefix="/api/chat")
     app.register_blueprint(notice_bp, url_prefix="/api/notice")
+    app.register_blueprint(consumable_bp, url_prefix="/api/consumable")
+    app.register_blueprint(notification_bp, url_prefix="/api/notification")
 
     @app.route("/api/health")
     def health():
         """健康检查。"""
         return jsonify({"code": 0, "msg": "ok"})
+
+    @app.route("/api/lan")
+    def lan():
+        """本机局域网信息：前端据此生成手机扫码用的 HTTPS 地址二维码。"""
+        https_on = os.path.isfile(app.config["SSL_CERT"]) and os.path.isfile(app.config["SSL_KEY"])
+        return jsonify({
+            "code": 0,
+            "data": {
+                "ips": _lan_ips(),
+                "http_port": 5000,
+                "https_port": app.config["HTTPS_PORT"],
+                "https_enabled": https_on,
+            },
+        })
 
     @app.route("/", defaults={"path": ""})
     @app.route("/<path:path>")
@@ -116,4 +176,9 @@ if __name__ == "__main__":
     # 默认同样关闭；需要自动重载时另设 FLASK_USE_RELOADER=1。
     debug = os.getenv("FLASK_DEBUG", "0") == "1"
     use_reloader = debug and os.getenv("FLASK_USE_RELOADER", "0") == "1"
+
+    # 局域网 HTTPS（存在证书时自动启用）：手机浏览器要求安全上下文才允许调起摄像头
+    if os.path.isfile(app.config["SSL_CERT"]) and os.path.isfile(app.config["SSL_KEY"]):
+        _start_https(app)
+
     app.run(host="0.0.0.0", port=5000, debug=debug, use_reloader=use_reloader)

@@ -50,8 +50,10 @@
         </div>
         <span class="q-text">联系工作室</span>
       </van-grid-item>
-      <van-grid-item v-if="isAdmin" to="/admin/pending">
-        <div class="q-icon" style="--c: #7232dd"><van-icon name="setting-o" /></div>
+      <van-grid-item v-if="isAdmin" to="/admin">
+        <van-badge :content="unreadCount > 0 ? String(unreadCount) : undefined" max="99">
+          <div class="q-icon" style="--c: #7232dd"><van-icon name="setting-o" /></div>
+        </van-badge>
         <span class="q-text">管理后台</span>
       </van-grid-item>
       <van-grid-item v-else to="/notices">
@@ -87,6 +89,7 @@ import { getUserInfo, getQuota } from '../api/user'
 import { getChatUnread } from '../api/chat'
 import { getNoticeList } from '../api/notice'
 import { useAuthStore } from '../store/auth'
+import { unreadCount } from '../store/notification'
 import TabBar from '../components/TabBar.vue'
 import hustRound from '../assets/login/hust-round.png'
 import heroImg from '../assets/home/hero.jpg'

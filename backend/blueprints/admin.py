@@ -8,6 +8,7 @@ from models import PrintApplication
 from utils.response import ok, fail
 from utils.auth import admin_required
 from services.logger import log_action
+from services.notify import notify_user
 
 bp = Blueprint("admin", __name__)
 
@@ -56,11 +57,19 @@ def review():
     if action == "approve":
         app_obj.status = "approved"
         app_obj.admin_comment = comment or None
+        notify_user(app_obj.user_id, "approval",
+                    f"申请 {app_obj.apply_no} 已通过",
+                    comment or "请等待打印，完成后凭校园卡到工作室领取",
+                    link=f"/application/{app_obj.id}")
     elif action == "reject":
         if not comment:
             return fail("拒绝时请填写拒绝原因", code=1002)
         app_obj.status = "rejected"
         app_obj.admin_comment = comment
+        notify_user(app_obj.user_id, "approval",
+                    f"申请 {app_obj.apply_no} 未通过",
+                    comment,
+                    link=f"/application/{app_obj.id}")
     else:
         return fail("无效的审批操作", code=1002)
 
@@ -90,10 +99,18 @@ def update_status():
     app_obj.status = status
     if status == "printing":
         app_obj.printed_at = datetime.now()
+        notify_user(app_obj.user_id, "status",
+                    f"申请 {app_obj.apply_no} 已开始打印",
+                    "打印完成后会通知你领取，请留意消息",
+                    link=f"/application/{app_obj.id}")
     elif status == "completed":
         if picked_up:
             app_obj.picked_up = True
             app_obj.pick_up_date = datetime.now()
+        notify_user(app_obj.user_id, "status",
+                    f"申请 {app_obj.apply_no} 已完成",
+                    "请上传实物图/现场照片反馈，成功可奖励 1 次打印机会",
+                    link=f"/application/{app_obj.id}")
 
     log_action(g.user.id, "update_status", f"申请 {app_obj.apply_no} → {status}")
     db.session.commit()
