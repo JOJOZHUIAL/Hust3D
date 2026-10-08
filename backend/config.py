@@ -60,6 +60,8 @@ class Config:
     DEFAULT_QUOTA = int(os.getenv("DEFAULT_QUOTA", "2"))  # 每学期默认打印次数
     # 管理员学号清单（逗号分隔），命中即视为管理员角色
     ADMIN_STUDENT_IDS = [s.strip() for s in os.getenv("ADMIN_STUDENT_IDS", "").split(",") if s.strip()]
+    # 超级管理员学号清单：可添加/移除管理员（含于 ADMIN_STUDENT_IDS 之上使用）
+    SUPER_ADMIN_STUDENT_IDS = [s.strip() for s in os.getenv("SUPER_ADMIN_STUDENT_IDS", "").split(",") if s.strip()]
 
     # —— 站点 ——
     # 前端地址，用于部署 / CORS 等场景（纯网页端，前端与后端分离部署）

@@ -43,6 +43,21 @@ def read_one(notice_id):
     return ok(msg="已读")
 
 
+@bp.route("/read-type/<ntype>", methods=["POST"])
+@login_required
+def read_type(ntype):
+    """按类型标记已读（进入对应页面时调用，红点联动）。
+
+    返回剩余未读数，前端直接更新角标。
+    """
+    if ntype not in {"approval", "apply", "chat", "consumable", "status"}:
+        return fail("无效的通知类型", code=1002)
+    Notification.query.filter_by(user_id=g.user.id, ntype=ntype, is_read=False)         .update({"is_read": True}, synchronize_session=False)
+    db.session.commit()
+    remain = Notification.query.filter_by(user_id=g.user.id, is_read=False).count()
+    return ok({"count": remain})
+
+
 @bp.route("/read-all", methods=["POST"])
 @login_required
 def read_all():

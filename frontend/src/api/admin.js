@@ -11,3 +11,10 @@ export const reviewApplication = (data) => request.post('/api/admin/application/
 
 // 更新打印状态（printing / completed / cancelled）
 export const updateApplicationStatus = (data) => request.put('/api/admin/application/status', data)
+
+// —— 管理员管理（仅超级管理员） ——
+export const getAdminList = () => request.get('/api/admin/admins')
+
+export const searchUsers = (keyword) => request.get('/api/admin/users/search', { params: { keyword } })
+
+export const setUserRole = (data) => request.post('/api/admin/set-role', data)

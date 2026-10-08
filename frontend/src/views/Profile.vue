@@ -14,12 +14,12 @@
     <van-cell-group inset>
       <van-cell v-if="isNative" title="服务器地址" :value="serverShort" icon="desktop-o" is-link @click="editServer" />
       <van-cell title="我的申请" icon="orders-o" is-link to="/applications" />
-      <van-cell title="使用指南" icon="question-o" is-link @click="onGuide" />
+      <van-cell title="使用指南" icon="question-o" is-link to="/guide" />
       <van-cell
         title="联系工作室"
         icon="chat-o"
         is-link
-        :to="isAdmin ? '/admin/chat' : '/chat'"
+        to="/chat"
       />
       <van-cell v-if="isAdmin" title="管理后台" icon="setting-o" is-link to="/admin" />
     </van-cell-group>
@@ -85,9 +85,6 @@ onMounted(async () => {
   }
 })
 
-function onGuide() {
-  showToast('使用指南（内容待补充）')
-}
 
 async function onLogout() {
   try {

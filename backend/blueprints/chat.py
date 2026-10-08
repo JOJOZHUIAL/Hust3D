@@ -68,12 +68,19 @@ def send():
     if ctype not in TYPE_SET:
         return fail("不支持的消息类型", code=1002)
 
-    # 会话归属与发送方角色
-    if g.user.role == "admin":
-        target = db.session.get(User, request.form.get("user_id", type=int))
-        if target is None:
-            return fail("请指定会话学生", code=1002)
-        owner_id, sender_role = target.id, "admin"
+    # 会话归属与发送方角色：
+    #   管理员带 user_id → 以工作室身份回复该学生；
+    #   管理员不带 user_id → 以工作室成员身份给自己名下的会话留言（其他管理员可见可回复）；
+    #   学生 → 正常发到自己会话。
+    if g.user.role in ("admin", "superadmin"):
+        uid = request.form.get("user_id", type=int)
+        if uid:
+            target = db.session.get(User, uid)
+            if target is None:
+                return fail("会话学生不存在", code=1002)
+            owner_id, sender_role = target.id, "admin"
+        else:
+            owner_id, sender_role = g.user.id, "user"
     else:
         owner_id, sender_role = g.user.id, "user"
 
@@ -126,7 +133,7 @@ def send():
                                                "voice": "[语音]", "file": "[文件]"}[ctype]
     if sender_role == "user":
         notify_admins("chat", f"{g.user.name or g.user.student_id} 发来新留言",
-                      preview, link="/admin/chat")
+                      preview, link="/admin/chat", exclude_uid=g.user.id)
     else:
         notify_user(owner_id, "chat", "工作室回复了你", preview, link="/chat")
     log_action(g.user.id, "chat_send", f"发送{ctype}消息")
@@ -142,22 +149,22 @@ def send():
 @login_required
 def messages():
     """拉取会话历史（最新 200 条，升序），并顺带把对方消息置为已读。"""
+    # 会话归属：管理员带 user_id 查指定学生，否则查自己名下会话（工作室成员留言）
+    uid = request.args.get("user_id", type=int)
     peer = None
-    if g.user.role == "admin":
-        uid = request.args.get("user_id", type=int)
-        target = db.session.get(User, uid) if uid else None
+    if g.user.role in ("admin", "superadmin") and uid:
+        target = db.session.get(User, uid)
         if target is None:
-            return fail("请指定会话学生", code=1002)
-        q = ChatMessage.query.filter_by(user_id=uid)
+            return fail("会话学生不存在", code=1002)
         peer = _peer_brief(target)
-        # 管理员读 → 学生的消息已读
-        ChatMessage.query.filter_by(user_id=uid, sender_role="user", is_read=False) \
-            .update({"is_read": True}, synchronize_session=False)
     else:
-        q = ChatMessage.query.filter_by(user_id=g.user.id)
-        # 学生读 → 管理员的消息已读
-        ChatMessage.query.filter_by(user_id=g.user.id, sender_role="admin", is_read=False) \
-            .update({"is_read": True}, synchronize_session=False)
+        uid = g.user.id
+
+    q = ChatMessage.query.filter_by(user_id=uid)
+    # 已读规则统一：进入会话后，非本人发送的未读消息全部置为已读
+    ChatMessage.query.filter_by(user_id=uid, is_read=False) \
+        .filter(ChatMessage.sender_id != g.user.id) \
+        .update({"is_read": True}, synchronize_session=False)
 
     rows = q.order_by(ChatMessage.id.asc()).limit(200).all()
     db.session.commit()
@@ -212,7 +219,7 @@ def contacts():
     多管理员共用一个收件箱：任何管理员都可主动联系任意学生，
     会话内容对所有管理员可见。
     """
-    rows = User.query.filter(User.role != "admin").order_by(User.student_id.asc()).all()
+    rows = User.query.filter(User.role == "user").order_by(User.student_id.asc()).all()
     return ok([_peer_brief(u) for u in rows])
 
 
@@ -220,7 +227,7 @@ def contacts():
 @login_required
 def unread():
     """未读消息数：学生看管理员发来的未读；管理员看所有学生的未读。"""
-    if g.user.role == "admin":
+    if g.user.role in ("admin", "superadmin"):
         cnt = ChatMessage.query.filter_by(sender_role="user", is_read=False).count()
     else:
         cnt = ChatMessage.query.filter_by(user_id=g.user.id, sender_role="admin", is_read=False).count()

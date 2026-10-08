@@ -56,7 +56,18 @@ def admin_required(fn):
     @wraps(fn)
     @login_required
     def wrapper(*args, **kwargs):
-        if g.user.role != "admin":
+        if g.user.role not in ("admin", "superadmin"):
             return fail("无权限访问", code=403, http_status=403)
+        return fn(*args, **kwargs)
+    return wrapper
+
+
+def super_required(fn):
+    """超级管理员权限校验（叠加在 admin_required 之上）。"""
+    @wraps(fn)
+    @admin_required
+    def wrapper(*args, **kwargs):
+        if g.user.role != "superadmin":
+            return fail("仅超级管理员可操作", code=403, http_status=403)
         return fn(*args, **kwargs)
     return wrapper

@@ -15,7 +15,9 @@ def notify_user(user_id, ntype, title, body="", link=""):
     ))
 
 
-def notify_admins(ntype, title, body="", link=""):
-    """给全部管理员各发一条（管理员共享收件箱）。"""
-    for u in User.query.filter_by(role="admin").all():
+def notify_admins(ntype, title, body="", link="", exclude_uid=None):
+    """给全部管理员各发一条（管理员共享收件箱），可排除某人（如发送者本人）。"""
+    for u in User.query.filter(User.role.in_(("admin", "superadmin"))).all():
+        if exclude_uid is not None and u.id == exclude_uid:
+            continue
         notify_user(u.id, ntype, title, body, link)

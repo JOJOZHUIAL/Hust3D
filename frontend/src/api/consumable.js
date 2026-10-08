@@ -14,5 +14,12 @@ export const openConsumable = (data) => request.post('/api/consumable/open', dat
 export const getConsumableLogs = (limit = 100) =>
   request.get('/api/consumable/logs', { params: { limit } })
 
-// 台账列表
-export const getConsumableList = () => request.get('/api/consumable/list')
+// 撤回本人的一条流水记录（误操作用），返回恢复后的耗材信息
+export const undoConsumableLog = (logId) => request.delete(`/api/consumable/logs/${logId}`)
+
+// 台账列表（keyword: 名称/材质/颜色/条码模糊筛选）
+export const getConsumableList = (keyword = '') =>
+  request.get('/api/consumable/list', { params: keyword ? { keyword } : {} })
+
+// 编辑耗材信息（条形码不变）
+export const updateConsumable = (data) => request.put('/api/consumable/update', data)

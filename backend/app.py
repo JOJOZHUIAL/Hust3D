@@ -119,6 +119,21 @@ def create_app():
         """健康检查。"""
         return jsonify({"code": 0, "msg": "ok"})
 
+    @app.route("/api/health/db")
+    def health_db():
+        """数据库诊断：连通性 + 表清单（部署排障用，无敏感信息）。"""
+        try:
+            from sqlalchemy import inspect, text
+            with app.app_context():
+                db.session.execute(text("SELECT 1"))
+                tables = sorted(inspect(db.engine).get_table_names())
+            required = {"users", "print_applications", "chat_messages", "announcements",
+                        "consumables", "consumable_logs", "notifications"}
+            missing = sorted(required - set(tables))
+            return jsonify({"code": 0, "data": {"db": "ok", "missing_tables": missing}})
+        except Exception as e:
+            return jsonify({"code": 1, "msg": f"数据库连接失败: {str(e)[:200]}"}), 500
+
     @app.route("/api/lan")
     def lan():
         """本机局域网信息：前端据此生成手机扫码用的 HTTPS 地址二维码。"""
@@ -146,11 +161,18 @@ def create_app():
             return jsonify({"code": 404, "msg": "Not Found"}), 404
         # 命中具体静态文件（带 hash 的 js/css 等）则直接返回
         if path and os.path.isfile(os.path.join(FRONTEND_DIST, path)):
-            return send_from_directory(FRONTEND_DIST, path)
+            resp = send_from_directory(FRONTEND_DIST, path)
+            # 带 hash 的资源内容永不变化，浏览器可缓存一年（换版本时文件名必变）
+            if path.replace("\\", "/").startswith("assets/"):
+                resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            return resp
         # 其余一律回退到 index.html（history 路由）
         index = os.path.join(FRONTEND_DIST, "index.html")
         if os.path.isfile(index):
-            return send_from_directory(FRONTEND_DIST, "index.html")
+            resp = send_from_directory(FRONTEND_DIST, "index.html")
+            # index 不缓存：发新版后用户强刷一次即可拿到新版本
+            resp.headers["Cache-Control"] = "no-cache"
+            return resp
         return jsonify({"code": 0, "msg": "前端尚未构建，请先执行 npm run build"})
 
     @app.route("/uploads/<path:filename>")

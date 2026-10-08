@@ -1,6 +1,6 @@
 <template>
   <div class="page notifications">
-    <van-nav-bar title="消息中心" left-arrow fixed placeholder @click-left="$router.back()">
+    <van-nav-bar title="消息中心" left-arrow fixed placeholder @click-left="goBack">
       <template #right>
         <span v-if="list.length" class="read-all" @click="onReadAll">全部已读</span>
       </template>
@@ -28,6 +28,8 @@
         </template>
       </van-cell>
     </van-cell-group>
+
+    <TabBar />
   </div>
 </template>
 
@@ -38,8 +40,15 @@ import {
   getNotificationList, readNotification, readAllNotifications,
 } from '../api/notification'
 import { setUnread } from '../store/notification'
+import TabBar from '../components/TabBar.vue'
 
 const router = useRouter()
+
+function goBack() {
+  if (window.history.length > 1) router.back()
+  else router.replace('/')
+}
+
 const list = ref([])
 const loading = ref(true)
 

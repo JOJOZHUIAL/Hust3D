@@ -13,3 +13,6 @@ export const readNotification = (id) => request.post(`/api/notification/read/${i
 
 // 全部已读
 export const readAllNotifications = () => request.post('/api/notification/read-all')
+
+// 按类型已读（进入对应页面时调用），返回剩余未读数 { count }
+export const readTypeNotifications = (ntype) => request.post(`/api/notification/read-type/${ntype}`)

@@ -71,8 +71,13 @@ def cas_login():
     user.college = college or user.college
     # 配额只在学期切换（含首次建号）时重置，避免同学期重复登录清空剩余次数
     ensure_quota(user)
-    # 管理员判定：学号命中配置清单即视为管理员，否则回退为普通用户
-    user.role = "admin" if student_id in current_app.config["ADMIN_STUDENT_IDS"] else "user"
+    # 角色判定：超级管理员 > 管理员 > 普通用户（每次登录按配置刷新）
+    if student_id in current_app.config.get("SUPER_ADMIN_STUDENT_IDS", []):
+        user.role = "superadmin"
+    elif student_id in current_app.config["ADMIN_STUDENT_IDS"]:
+        user.role = "admin"
+    else:
+        user.role = "user"
 
     log_action(user.id, "cas_login", f"学号 {student_id} 登录成功")
     db.session.commit()

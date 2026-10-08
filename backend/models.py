@@ -253,6 +253,7 @@ class ConsumableLog(db.Model):
             "quantity_change": self.quantity_change,
             "quantity_after": self.quantity_after,
             "operator": self.operator.name if self.operator else None,
+            "operator_id": self.operator_id,
             "note": self.note,
             "created_at": _fmt(self.created_at),
         }

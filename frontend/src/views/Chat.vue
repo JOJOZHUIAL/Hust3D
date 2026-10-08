@@ -157,6 +157,8 @@ import { sendChatMessage, getChatMessages } from '../api/chat'
 import { downloadBlob } from '../api/application'
 import { useAuthStore } from '../store/auth'
 import { assetUrl as serverAssetUrl } from '../utils/server'
+import { readTypeNotifications } from '../api/notification'
+import { setUnread } from '../store/notification'
 
 const route = useRoute()
 const router = useRouter()
@@ -507,10 +509,9 @@ function onRecStop() {
 }
 
 onMounted(() => {
-  // 管理员没有「自己」的学生会话，误入 /chat 时转跳到会话列表
-  if (!adminMode.value && auth.isAdmin) {
-    router.replace({ name: 'admin-chat' })
-    return
+  // 管理员也可以用 /chat（以工作室成员身份发消息）；进入即把留言类通知标为已读
+  if (!adminMode.value) {
+    readTypeNotifications('chat').then(({ count }) => setUnread(count)).catch(() => {})
   }
   load()
   // 轮询刷新（页面隐藏时跳过，销毁时清理）

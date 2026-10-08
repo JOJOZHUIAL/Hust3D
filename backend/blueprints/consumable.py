@@ -8,7 +8,7 @@
   4. GET  /logs                  → 最近进出流水（含物品信息与操作人）。
 """
 from flask import Blueprint, request, g
-from sqlalchemy import desc
+from sqlalchemy import desc, or_
 
 from extensions import db
 from models import Consumable, ConsumableLog
@@ -164,9 +164,89 @@ def logs():
     return ok([r.to_dict() for r in rows])
 
 
+@bp.route("/logs/<int:log_id>", methods=["DELETE"])
+@admin_required
+def undo_log(log_id):
+    """撤回一条本人的流水记录（误操作用）：删除该记录并回退库存。
+
+    只能撤回本人操作的记录；撤回入库时若会导致库存为负则拒绝。
+    """
+    log = db.session.get(ConsumableLog, log_id)
+    if log is None:
+        return fail("记录不存在", code=404, http_status=404)
+    if log.operator_id != g.user.id:
+        return fail("只能撤回本人操作的记录", code=1002)
+
+    item = log.consumable
+    if log.action == "open":
+        item.quantity += 1
+    elif log.action == "in":
+        if item.quantity < log.quantity_change:
+            return fail(
+                f"撤回后库存将为负（当前 {item.quantity}，该入库 {log.quantity_change:+d}），请先核对后续操作",
+                code=1002,
+            )
+        item.quantity -= log.quantity_change
+    else:
+        return fail("该记录不支持撤回", code=1002)
+
+    verb = "拆封" if log.action == "open" else "入库"
+    log_action(g.user.id, "consumable_undo", f"撤回{verb}记录：{item.name}({item.barcode})，库存恢复为 {item.quantity}")
+    db.session.delete(log)
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        return fail("撤回失败，请重试", code=500, http_status=500)
+    return ok(item.to_dict(), msg=f"已撤回{verb}记录，库存恢复为 {item.quantity} {item.unit}")
+
+
 @bp.route("/list", methods=["GET"])
 @admin_required
 def list_items():
-    """耗材台账列表（当前库存一览）。"""
-    rows = Consumable.query.order_by(Consumable.updated_at.desc()).all()
+    """耗材台账列表（当前库存一览），支持按名称/材质/颜色/条码模糊筛选。"""
+    kw = (request.args.get("keyword") or "").strip()
+    q = Consumable.query
+    if kw:
+        like = f"%{kw}%"
+        q = q.filter(or_(
+            Consumable.name.like(like),
+            Consumable.material.like(like),
+            Consumable.color.like(like),
+            Consumable.barcode.like(like),
+        ))
+    rows = q.order_by(Consumable.updated_at.desc()).all()
     return ok([r.to_dict() for r in rows])
+
+
+@bp.route("/update", methods=["PUT"])
+@admin_required
+def update_item():
+    """编辑耗材信息（条形码不变，名称/材质/颜色/单位随时可改）。"""
+    data = request.get_json(silent=True) or {}
+    bc = _clean_barcode(data.get("barcode"))
+    if bc is None:
+        return fail("条形码格式不正确", code=1002)
+    item = Consumable.query.filter_by(barcode=bc).first()
+    if item is None:
+        return fail("耗材不存在", code=404, http_status=404)
+
+    if "name" in data:
+        name = (data.get("name") or "").strip()
+        if not name:
+            return fail("名称不能为空", code=1002)
+        item.name = name[:NAME_MAX]
+    if "material" in data:
+        item.material = (data.get("material") or "").strip()[:64] or None
+    if "color" in data:
+        item.color = (data.get("color") or "").strip()[:64] or None
+    if "unit" in data:
+        item.unit = (data.get("unit") or "").strip()[:16] or "卷"
+
+    log_action(g.user.id, "consumable_update", f"编辑耗材 {item.name}({bc})")
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        return fail("保存失败，请重试", code=500, http_status=500)
+    return ok(item.to_dict(), msg="保存成功")

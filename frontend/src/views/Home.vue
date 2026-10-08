@@ -38,11 +38,11 @@
         <div class="q-icon" style="--c: #2f6bff"><van-icon name="records" /></div>
         <span class="q-text">我的申请</span>
       </van-grid-item>
-      <van-grid-item to="/notices">
+      <van-grid-item to="/guide">
         <div class="q-icon" style="--c: #ff976a"><van-icon name="question-o" /></div>
         <span class="q-text">使用指南</span>
       </van-grid-item>
-      <van-grid-item :to="isAdmin ? '/admin/chat' : '/chat'">
+      <van-grid-item to="/chat">
         <div class="q-icon" style="--c: #07c160">
           <van-badge :content="unread > 0 ? String(unread) : undefined" max="99">
             <van-icon name="chat-o" />
@@ -116,35 +116,24 @@ const greeting = computed(() => {
   return '晚上好'
 })
 
-onMounted(async () => {
-  try {
-    const info = await getUserInfo()
-    auth.setUser(info)
-    remaining.value = info.remaining_quota
-  } catch (e) {
-    /* 拦截器已处理 */
-  }
-  // 配额单独刷新（顺带触发学期重置逻辑）
-  try {
-    const q = await getQuota()
-    remaining.value = q.remaining
-  } catch (e) {
-    /* 忽略 */
-  }
-  // 工作室留言未读数（角标；接口失败静默）
-  try {
-    unread.value = (await getChatUnread()).count || 0
-  } catch (e) {
-    /* 忽略 */
-  }
-  // 最新公告（取前 3 条，点击进详情）
-  try {
-    notices.value = (await getNoticeList()).slice(0, 3)
-  } catch (e) {
-    /* 忽略 */
-  } finally {
-    noticesLoading.value = false
-  }
+onMounted(() => {
+  // 并行请求：页面骨架先渲染，数据谁先回来谁先上屏
+  getUserInfo()
+    .then((info) => {
+      auth.setUser(info)
+      remaining.value = info.remaining_quota
+    })
+    .catch(() => {})
+  getQuota()
+    .then((q) => (remaining.value = q.remaining))
+    .catch(() => {})
+  getChatUnread(true)
+    .then((d) => (unread.value = d.count || 0))
+    .catch(() => {})
+  getNoticeList()
+    .then((list) => (notices.value = list.slice(0, 3)))
+    .catch(() => {})
+    .finally(() => (noticesLoading.value = false))
 })
 </script>
 

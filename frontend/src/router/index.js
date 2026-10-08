@@ -15,6 +15,7 @@ const routes = [
   { path: '/application/:id', name: 'application-detail', component: () => import('../views/ApplicationDetail.vue') },
   { path: '/profile', name: 'profile', component: () => import('../views/Profile.vue') },
   { path: '/chat', name: 'chat', component: () => import('../views/Chat.vue') },
+  { path: '/guide', name: 'guide', component: () => import('../views/Guide.vue') },
   { path: '/notices', name: 'notice-list', component: () => import('../views/NoticeList.vue') },
   { path: '/notifications', name: 'notifications', component: () => import('../views/Notifications.vue') },
   {
@@ -39,6 +40,11 @@ const routes = [
     path: '/admin/consumables',
     name: 'admin-consumables',
     component: () => import('../views/admin/Consumables.vue'),
+  },
+  {
+    path: '/admin/admins',
+    name: 'admin-admins',
+    component: () => import('../views/admin/AdminAdmins.vue'),
   },
 ]
 

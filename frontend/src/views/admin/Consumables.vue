@@ -22,19 +22,31 @@
         <van-button size="small" plain round @click="stopScan">关闭摄像头</van-button>
       </div>
 
-      <!-- 手动输入兜底（电脑端 / 摄像头不可用时） -->
+      <!-- 手动输入 / 模糊搜索（电脑端 / 摄像头不可用 / 按名称颜色材质条码查找） -->
       <div class="manual-row">
         <van-field
           v-model="barcode"
           class="manual-input"
-          placeholder="或手动输入条形码数字"
-          type="digit"
+          placeholder="输入条形码，或名称/颜色/材质搜索"
           clearable
-          @keyup.enter="doLookup"
+          @keyup.enter="onManualEnter"
+          @update:model-value="onKeywordInput"
         />
-        <van-button type="primary" size="small" round :loading="looking" @click="doLookup">
+        <van-button type="primary" size="small" round :loading="looking" @click="onManualEnter">
           查询
         </van-button>
+      </div>
+      <!-- 模糊搜索匹配列表 -->
+      <div v-if="searchHits.length" class="search-hits">
+        <div
+          v-for="it in searchHits"
+          :key="it.id"
+          class="hit-item"
+          @click="pickHit(it)"
+        >
+          <span class="hit-name">{{ it.name }}</span>
+          <span class="hit-meta">{{ it.material || '—' }}/{{ it.color || '—' }} · 库存 {{ it.quantity }} {{ it.unit }} · {{ it.barcode }}</span>
+        </div>
       </div>
       <div v-if="lastResultMsg" class="scan-msg" :class="{ ok: lastOk }">{{ lastResultMsg }}</div>
 
@@ -120,7 +132,14 @@
         <div class="form-pad">
           <van-search v-model="stockKeyword" placeholder="按名称 / 材质 / 颜色 / 条码筛选" shape="round" />
           <van-cell-group inset>
-            <van-cell v-for="it in filteredItems" :key="it.id" :title="it.name" :label="`${it.material || '—'} · ${it.color || '—'} · ${it.barcode}`">
+            <van-cell
+              v-for="it in filteredItems"
+              :key="it.id"
+              :title="it.name"
+              :label="`${it.material || '—'} · ${it.color || '—'} · ${it.barcode}`"
+              is-link
+              @click="openEdit(it)"
+            >
               <template #value>
                 <span class="stock-num" :class="{ low: it.quantity <= 1 }">{{ it.quantity }}</span> {{ it.unit }}
               </template>
@@ -135,6 +154,18 @@
         <div class="form-pad">
           <van-cell-group inset>
             <van-cell v-for="log in logs" :key="log.id">
+              <template #right-icon>
+                <van-button
+                  v-if="log.operator_id === auth.user?.id"
+                  size="mini"
+                  plain
+                  type="danger"
+                  style="margin-left: 8px"
+                  @click="onUndoLog(log)"
+                >
+                  撤回
+                </van-button>
+              </template>
               <template #title>
                 <span class="log-tag" :class="log.action">
                   {{ log.action === 'in' ? `入库 +${log.quantity_change}` : `拆封 ${log.quantity_change}` }}
@@ -152,6 +183,24 @@
         </div>
       </van-tab>
     </van-tabs>
+
+    <!-- 编辑耗材信息 -->
+    <van-popup v-model:show="editShow" position="bottom" round :style="{ minHeight: '46%' }">
+      <div class="edit-panel">
+        <div class="editor-title">编辑耗材信息</div>
+        <van-cell-group inset>
+          <van-field v-model="editForm.barcode" label="条形码" readonly />
+          <van-field v-model="editForm.name" label="名称" placeholder="耗材名称" maxlength="128" required />
+          <van-field v-model="editForm.material" label="材质" placeholder="如 PLA / PETG" maxlength="64" />
+          <van-field v-model="editForm.color" label="颜色" placeholder="如 黑色" maxlength="64" />
+          <van-field v-model="editForm.unit" label="单位" placeholder="卷 / 盒 / 桶" maxlength="16" />
+        </van-cell-group>
+        <div class="submit-row">
+          <van-button block round type="primary" :loading="saving" @click="onSaveEdit">保存</van-button>
+        </div>
+        <p class="hint">库存数量由扫码入库/拆封自动增减，此处不可直接改。</p>
+      </div>
+    </van-popup>
   </div>
 </template>
 
@@ -162,9 +211,11 @@ import QRCode from 'qrcode'
 import { scanImageData } from '@undecaf/zbar-wasm'
 import { useAuthStore } from '../../store/auth'
 import { getLanInfo } from '../../api/system'
+import { readTypeNotifications } from '../../api/notification'
+import { setUnread } from '../../store/notification'
 import {
   scanConsumable, stockInConsumable, openConsumable,
-  getConsumableLogs, getConsumableList,
+  getConsumableLogs, getConsumableList, undoConsumableLog, updateConsumable,
 } from '../../api/consumable'
 
 const auth = useAuthStore()
@@ -183,6 +234,17 @@ const openNote = ref('')
 const items = ref([])
 const scanVideo = ref(null)
 const logs = ref([])
+const stockKeyword = ref('')
+const searchHits = ref([])
+const searchTimer = ref(null)
+// 台账筛选：名称 / 材质 / 颜色 / 条码任一命中即显示（如输入颜色名可列出该色所有耗材）
+const filteredItems = computed(() => {
+  const k = stockKeyword.value.trim().toLowerCase()
+  if (!k) return items.value
+  return items.value.filter((it) =>
+    [it.name, it.material, it.color, it.barcode].some((v) => (v || '').toLowerCase().includes(k)),
+  )
+})
 
 // 手机扫码帮助：局域网 http 访问（非安全上下文）时展示 HTTPS 二维码
 const qrCanvas = ref(null)
@@ -298,6 +360,39 @@ function beep() {
   }
 }
 
+// —— 模糊搜索：输入即搜（名称/材质/颜色/条码） ——
+function onKeywordInput(v) {
+  clearTimeout(searchTimer)
+  const kw = (v || '').trim()
+  // 纯数字且长度较长 → 视为条码输入，不触发搜索下拉
+  if (/^\d{8,}$/.test(kw) || !kw) {
+    searchHits.value = []
+    return
+  }
+  searchTimer = setTimeout(async () => {
+    try {
+      searchHits.value = await getConsumableList(kw)
+    } catch (e) {
+      searchHits.value = []
+    }
+  }, 300)
+}
+
+function pickHit(it) {
+  searchHits.value = []
+  barcode.value = it.barcode
+  form.value.barcode = it.barcode
+  lookup.value = { exists: true, item: it }
+  lastOk.value = true
+  lastResultMsg.value = `已选择：${it.name}（库存 ${it.quantity} ${it.unit}）`
+  doLookup()
+}
+
+function onManualEnter() {
+  searchHits.value = []
+  doLookup()
+}
+
 // —— 查询 ——
 async function doLookup() {
   const bc = barcode.value.trim()
@@ -403,6 +498,73 @@ async function loadStock() {
   }
 }
 
+// —— 编辑耗材信息 ——
+const editShow = ref(false)
+const saving = ref(false)
+const editForm = ref({ barcode: '', name: '', material: '', color: '', unit: '' })
+
+function openEdit(it) {
+  editForm.value = {
+    barcode: it.barcode,
+    name: it.name || '',
+    material: it.material || '',
+    color: it.color || '',
+    unit: it.unit || '卷',
+  }
+  editShow.value = true
+}
+
+async function onSaveEdit() {
+  if (!editForm.value.name.trim()) {
+    showFailToast('名称不能为空')
+    return
+  }
+  saving.value = true
+  try {
+    const item = await updateConsumable({
+      barcode: editForm.value.barcode,
+      name: editForm.value.name.trim(),
+      material: editForm.value.material.trim(),
+      color: editForm.value.color.trim(),
+      unit: editForm.value.unit.trim() || '卷',
+    })
+    editShow.value = false
+    showSuccessToast('保存成功')
+    loadStock()
+    if (lookup.value?.exists && lookup.value.item.barcode === item.barcode) {
+      lookup.value = { exists: true, item }
+    }
+  } catch (e) {
+    /* 拦截器已提示 */
+  } finally {
+    saving.value = false
+  }
+}
+
+async function onUndoLog(log) {
+  const verb = log.action === 'in' ? `入库 +${log.quantity_change}` : '拆封 -1'
+  const effect = log.action === 'in'
+    ? `库存将回退 ${log.quantity_change} ${log.unit || ''}`
+    : '库存将 +1 恢复'
+  try {
+    await showConfirmDialog({
+      title: '撤回操作记录',
+      message: `确认撤回这条「${verb}」记录吗？
+${effect}，该记录将删除。`,
+    })
+  } catch (e) {
+    return
+  }
+  try {
+    const item = await undoConsumableLog(log.id)
+    showSuccessToast(item.msg || '已撤回')
+    loadLogs()
+    loadStock()
+  } catch (e) {
+    /* 拦截器已提示 */
+  }
+}
+
 async function loadLogs() {
   try {
     logs.value = await getConsumableLogs(100)
@@ -419,6 +581,7 @@ watch(tab, (t) => {
 onMounted(() => {
   loadStock()
   initPhoneHelp()
+  readTypeNotifications('consumable').then(({ count }) => setUnread(count)).catch(() => {})
 })
 
 onUnmounted(() => {
@@ -505,6 +668,43 @@ onUnmounted(() => {
 }
 .scan-msg.ok {
   color: #07c160;
+}
+
+.search-hits {
+  margin-top: 8px;
+  border-radius: 8px;
+  background: #fff;
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(20, 46, 104, 0.08);
+}
+.hit-item {
+  padding: 10px 12px;
+  border-bottom: 1px solid #f0f1f5;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.hit-item:active {
+  background: #f7f8fa;
+}
+.hit-name {
+  font-size: 14px;
+  color: #323233;
+}
+.hit-meta {
+  font-size: 12px;
+  color: #969799;
+}
+.edit-panel {
+  padding: 16px 0 24px;
+}
+.editor-title {
+  text-align: center;
+  font-size: 16px;
+  font-weight: 600;
+  color: #1a2233;
+  margin-bottom: 12px;
 }
 
 /* 手机扫码帮助面板 */

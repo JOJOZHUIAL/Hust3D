@@ -69,9 +69,8 @@ def main():
         proj, rel = m.groups()
         src = os.path.normpath(os.path.join(FRONTEND, "node_modules", rel))
         dest = os.path.join(BUILD_DIR, "plugins", proj.lstrip(":"))
-        if os.path.isdir(dest):
-            shutil.rmtree(dest, ignore_errors=True)
-        shutil.copytree(src, dest)
+        shutil.rmtree(dest, ignore_errors=True)
+        shutil.copytree(src, dest, dirs_exist_ok=True)
         return f"project('{proj}').projectDir = new File('plugins/{proj.lstrip(':')}')"
 
     s = re.sub(r"project\('([^']+)'\)\.projectDir = new File\('\.\./node_modules/([^']+)'\)", _localize, s)

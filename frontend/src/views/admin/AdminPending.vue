@@ -52,6 +52,8 @@ import { ref, onMounted } from 'vue'
 import { showConfirmDialog, showSuccessToast, showFailToast } from 'vant'
 import { getPendingApplications, getAllApplications, reviewApplication, updateApplicationStatus } from '../../api/admin'
 import { STATUS, PURPOSE_TEXT } from '../../utils/constants'
+import { readTypeNotifications } from '../../api/notification'
+import { setUnread } from '../../store/notification'
 
 const activeTab = ref('pending')
 const list = ref([])
@@ -134,7 +136,10 @@ async function onAdvance(item, status) {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  readTypeNotifications('apply').then(({ count }) => setUnread(count)).catch(() => {})
+})
 </script>
 
 <style scoped>

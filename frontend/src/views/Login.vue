@@ -17,6 +17,7 @@
           label="服务器"
           placeholder="如 http://192.168.1.150:5000"
           clearable
+          @update:model-value="onServerInput"
         >
           <template #left-icon>
             <van-icon name="desktop-o" />
@@ -50,13 +51,20 @@
         >
           <template #button>
             <img
-              v-if="captchaImg"
+              v-if="captchaState === 'ok' && captchaImg"
               :src="captchaImg"
               class="captcha-img"
               alt="验证码"
               title="点击刷新"
               @click="refreshCaptcha"
             />
+            <div
+              v-else-if="captchaState === 'error'"
+              class="captcha-retry"
+              @click="refreshCaptcha"
+            >
+              点击重试
+            </div>
             <van-loading v-else size="20" />
           </template>
         </van-field>
@@ -97,20 +105,45 @@ const loading = ref(false)
 const isNative = isNativePlatform()
 const serverBase = ref(getServerBase() || (isNative ? 'http://192.168.1.150:5000' : ''))
 
+// App 模式：修改服务器地址后自动从新服务器取验证码；换服时清掉旧登录态
+let serverTimer = null
+function onServerInput(v) {
+  clearTimeout(serverTimer)
+  serverTimer = setTimeout(() => {
+    const url = (v || '').trim().replace(/\/+$/, '')
+    if (!url || url === getServerBase()) return
+    setServerBase(url)
+    auth.logout() // 旧服务器的登录态对新服务器无效
+    refreshCaptcha() // 自动从新服务器取验证码
+  }, 600)
+}
+
 onMounted(() => {
-  if (isNative) setServerBase(serverBase.value)
+  if (isNative) {
+    setServerBase(serverBase.value)
+    // 切后台再回来（网络环境可能变化）自动刷新验证码
+    import('@capacitor/app').then(({ App: CapApp }) => {
+      CapApp.addListener('resume', () => refreshCaptcha())
+    }).catch(() => {})
+  }
   refreshCaptcha()
 })
 
-// 验证码相关
+// 验证码相关：state = loading(取码中) / ok(正常) / error(失败可重试)
 const captchaRequired = ref(false)
 const captchaId = ref('')
 const captchaImg = ref('')
 const captchaCode = ref('')
+const captchaState = ref('loading')
+let captchaSeq = 0 // 丢弃过期响应（换服务器/连点重试时）
 
 async function refreshCaptcha() {
+  const seq = ++captchaSeq
+  if (isNative) setServerBase(serverBase.value)
+  captchaState.value = 'loading'
   try {
     const data = await getCaptcha()
+    if (seq !== captchaSeq) return // 已有更新的请求，丢弃
     captchaRequired.value = !!data.captcha_required
     if (data.captcha_required) {
       captchaId.value = data.captcha_id
@@ -118,8 +151,12 @@ async function refreshCaptcha() {
       captchaImg.value = 'data:' + mime + ';base64,' + data.captcha_img
       captchaCode.value = ''
     }
+    captchaState.value = 'ok'
   } catch (e) {
-    /* 拦截器已提示 */
+    if (seq !== captchaSeq) return
+    // 失败也显示验证码行（含「点击重试」），不再整行消失
+    captchaState.value = 'error'
+    captchaRequired.value = true
   }
 }
 
@@ -133,7 +170,12 @@ async function onSubmit() {
     return
   }
   if (captchaRequired.value && !captchaCode.value.trim()) {
-    showFailToast('请输入验证码')
+    if (captchaState.value !== 'ok') {
+      showFailToast('验证码未加载，正在自动重新获取…')
+      refreshCaptcha()
+    } else {
+      showFailToast('请输入验证码')
+    }
     return
   }
 
@@ -246,6 +288,19 @@ async function onSubmit() {
   border-radius: 4px;
   cursor: pointer;
   vertical-align: middle;
+}
+.captcha-retry {
+  min-width: 64px;
+  padding: 6px 10px;
+  text-align: center;
+  border-radius: 4px;
+  background: #f2f6ff;
+  color: #2f6bff;
+  font-size: 12px;
+  cursor: pointer;
+}
+.captcha-retry:active {
+  background: #e0eaff;
 }
 
 /* 桌面端：背景全屏铺满，卡片居中（覆盖 global.css 的移动端限宽） */

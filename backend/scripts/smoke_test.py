@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ["DATABASE_URL"] = "sqlite:///./smoke.db"
 os.environ["CAS_MOCK"] = "1"
 os.environ["ADMIN_STUDENT_IDS"] = "20260001"
+os.environ["SUPER_ADMIN_STUDENT_IDS"] = "20260001"
 
 from app import app  # noqa: E402
 from extensions import db  # noqa: E402
@@ -53,7 +54,7 @@ def main():
     r = c.get("/api/user/info", headers=headers)
     info = r.get_json()["data"]
     check("user/info 返回学号", info.get("student_id") == STUDENT_ID, info)
-    check("user/info 角色为 admin", info.get("role") == "admin", info.get("role"))
+    check("user/info 角色为 admin/superadmin", info.get("role") in ("admin", "superadmin"), info.get("role"))
 
     r = c.get("/api/user/quota", headers=headers)
     check("quota 初始为 2", r.get_json()["data"]["remaining"] == 2)
@@ -307,6 +308,75 @@ def main():
     check("全部已读成功", r.get_json().get("code") == 0, r.get_json())
     r = c.get("/api/notification/unread-count", headers=stu_headers)
     check("已读后未读清零", (r.get_json().get("data") or {}).get("count") == 0, r.get_json())
+
+    # 7.13 补充：管理员以工作室成员身份发消息 / 耗材编辑与搜索 / 按类型已读
+    r = c.post("/api/chat/send", headers=headers,
+               data={"content_type": "text", "content": "各位：新到一批黑色 PLA"},
+               content_type="multipart/form-data")
+    check("管理员免指定会话发消息", r.get_json().get("code") == 0, r.get_json())
+    check("以用户角色入库", (r.get_json().get("data") or {}).get("sender_role") == "user", r.get_json())
+    r = c.get("/api/chat/messages", headers=headers)
+    msgs = (r.get_json().get("data") or {}).get("messages") or []
+    check("管理员查自己会话", any("黑色 PLA" in (m.get("content") or "") for m in msgs), msgs)
+
+    r = c.get("/api/consumable/list?keyword=黑色", headers=headers)
+    hits = r.get_json().get("data") or []
+    check("耗材按颜色搜索", len(hits) == 1 and hits[0]["color"] == "黑色", hits)
+    r = c.get("/api/consumable/list?keyword=不存在的东西", headers=headers)
+    check("耗材搜索无命中为空", (r.get_json().get("data") or []) == [], r.get_json())
+
+    r = c.put("/api/consumable/update", headers=headers,
+              json={"barcode": BC, "name": "PLA 1.75mm 哑光", "color": "磨砂黑"})
+    check("编辑耗材信息", (r.get_json().get("data") or {}).get("name") == "PLA 1.75mm 哑光", r.get_json())
+
+    # 管理员发消息生成 chat 通知（排除自己 → 其他管理员收；本例仅一名管理员 → 自己不收）
+    r = c.get("/api/notification/unread-count", headers=headers)
+    cnt_before = (r.get_json().get("data") or {}).get("count")
+    r = c.post("/api/notification/read-type/chat", headers=headers)
+    remain = (r.get_json().get("data") or {}).get("count")
+    rows = c.get("/api/notification/list", headers=headers).get_json().get("data") or []
+    chat_unread = [x for x in rows if x["ntype"] == "chat" and not x["is_read"]]
+    check("按类型已读：chat 类通知清零", r.get_json().get("code") == 0 and not chat_unread, len(chat_unread))
+
+    # 7.14 超级管理员：角色赋值 + 添加/移除管理员 + 防护规则
+    r = c.get("/api/user/info", headers=headers)
+    check("超级管理员角色生效", (r.get_json().get("data") or {}).get("role") == "superadmin", r.get_json())
+
+    r = c.get("/api/admin/users/search?keyword=20260002", headers=headers)
+    hits = r.get_json().get("data") or []
+    check("搜索普通用户", len(hits) == 1 and hits[0]["student_id"] == "20260002", hits)
+
+    r = c.post("/api/admin/set-role", headers=headers, json={"student_id": "20260002", "role": "admin"})
+    check("添加管理员", (r.get_json().get("data") or {}).get("role") == "admin", r.get_json())
+    r = c.get("/api/admin/admins", headers=headers)
+    check("管理员清单含新人", any(u["student_id"] == "20260002" for u in (r.get_json().get("data") or [])), r.get_json())
+
+    r = c.post("/api/admin/set-role", headers=headers, json={"student_id": "20260001", "role": "user"})
+    check("不能修改自己", r.get_json().get("code") == 1002, r.get_json())
+
+    r = c.post("/api/admin/set-role", headers=headers, json={"student_id": "20260002", "role": "user"})
+    check("移除管理员", (r.get_json().get("data") or {}).get("role") == "user", r.get_json())
+
+    r = c.post("/api/admin/set-role", headers=stu_headers, json={"student_id": "20260002", "role": "admin"})
+    check("普通用户无权设置角色", r.get_json().get("code") == 403, r.get_json())
+
+    # 7.15 耗材撤回与关键词搜索
+    r = c.get("/api/consumable/list?keyword=PLA", headers=headers)
+    pla_hits = r.get_json().get("data") or []
+    check("关键词 PLA 命中耗材", any("PLA" in (x.get("name") or "") or (x.get("material") or "").startswith("PLA") for x in pla_hits), pla_hits)
+
+    r = c.post("/api/consumable/open", headers=headers, json={"barcode": BC})
+    check("拆封用于撤回测试", r.get_json().get("code") == 0, r.get_json())
+    qty_after_open = (r.get_json().get("data") or {}).get("quantity")
+
+    r = c.get("/api/consumable/logs?limit=5", headers=headers)
+    logs = r.get_json().get("data") or []
+    own_open = next((x for x in logs if x["action"] == "open" and x["operator_id"] == 1), None)
+    check("流水含本人拆封记录", own_open is not None, logs[:1])
+
+    r = c.delete(f"/api/consumable/logs/{own_open['id']}", headers=headers)
+    check("撤回本人拆封记录", r.get_json().get("code") == 0 and
+          (r.get_json().get("data") or {}).get("quantity") == qty_after_open + 1, r.get_json())
 
     # 8. 退出登录
     r = c.post("/api/auth/logout", headers=headers)

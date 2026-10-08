@@ -57,6 +57,8 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { getChatConversations, getChatContacts } from '../../api/chat'
+import { readTypeNotifications } from '../../api/notification'
+import { setUnread } from '../../store/notification'
 
 const router = useRouter()
 const list = ref([])
@@ -114,6 +116,7 @@ async function load(silent = false) {
 
 onMounted(() => {
   load()
+  readTypeNotifications('chat').then(({ count }) => setUnread(count)).catch(() => {})
   pollTimer = setInterval(() => {
     if (!document.hidden) load(true)
   }, 6000)

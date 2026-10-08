@@ -30,6 +30,12 @@
         <div class="hub-desc">回复学生咨询与留言</div>
       </div>
 
+      <div v-if="isSuper" class="hub-item" @click="$router.push('/admin/admins')">
+        <div class="hub-icon" style="--c: #ee0a24"><van-icon name="manager-o" /></div>
+        <div class="hub-name">管理员管理</div>
+        <div class="hub-desc">添加与移除管理员</div>
+      </div>
+
       <div class="hub-item" @click="$router.push('/admin/consumables')">
         <div class="hub-icon" style="--c: #7232dd"><van-icon name="scan" /></div>
         <div class="hub-name">耗材管理</div>
@@ -50,6 +56,7 @@ import TabBar from '../../components/TabBar.vue'
 
 const auth = useAuthStore()
 const user = computed(() => auth.user)
+const isSuper = computed(() => auth.user?.role === 'superadmin')
 const pendingCount = ref(0)
 const chatUnread = ref(0)
 

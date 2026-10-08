@@ -27,6 +27,16 @@ onMounted(async () => {
   } catch (e) {
     /* 401 由拦截器统一处理并跳登录页，其余错误忽略 */
   }
+  // 安卓返回键：有路由历史时回退，仅在首页/无历史时退出 App
+  // （默认行为是历史栈一浅就整个退出，导致子页面按返回直接闪退）
+  if (isNative()) {
+    import('@capacitor/app').then(({ App: CapApp }) => {
+      CapApp.addListener('backButton', ({ canGoBack }) => {
+        if (canGoBack) window.history.back()
+        else CapApp.exitApp()
+      })
+    }).catch(() => {})
+  }
   // App 内申请系统通知权限（安卓 13+ 必须运行时申请，否则横幅/系统通知不显示）
   if (isNative()) {
     import('@capacitor/local-notifications').then(async ({ LocalNotifications }) => {

@@ -3,10 +3,11 @@
 from datetime import datetime
 
 from flask import Blueprint, request, g
+from sqlalchemy import or_
 from extensions import db
-from models import PrintApplication
+from models import PrintApplication, User
 from utils.response import ok, fail
-from utils.auth import admin_required
+from utils.auth import admin_required, super_required
 from services.logger import log_action
 from services.notify import notify_user
 
@@ -115,3 +116,49 @@ def update_status():
     log_action(g.user.id, "update_status", f"申请 {app_obj.apply_no} → {status}")
     db.session.commit()
     return ok(app_obj.to_dict(), msg="状态已更新")
+
+
+@bp.route("/admins", methods=["GET"])
+@super_required
+def admins_list():
+    """现任管理员清单（含超级管理员）。"""
+    rows = User.query.filter(User.role.in_(("admin", "superadmin")))         .order_by(User.student_id.asc()).all()
+    return ok([u.to_dict() for u in rows])
+
+
+@bp.route("/users/search", methods=["GET"])
+@super_required
+def users_search():
+    """按学号/姓名搜索普通用户（用于添加管理员）。"""
+    kw = (request.args.get("keyword") or "").strip()
+    if not kw:
+        return ok([])
+    like = f"%{kw}%"
+    rows = User.query.filter(
+        User.role == "user",
+        or_(User.student_id.like(like), User.name.like(like)),
+    ).order_by(User.student_id.asc()).limit(20).all()
+    return ok([u.to_dict() for u in rows])
+
+
+@bp.route("/set-role", methods=["POST"])
+@super_required
+def set_role():
+    """设置用户角色（仅可在 admin / user 之间切换；超级管理员不可被修改）。"""
+    data = request.get_json(silent=True) or {}
+    student_id = (data.get("student_id") or "").strip()
+    role = data.get("role")
+    if role not in ("admin", "user"):
+        return fail("无效的角色", code=1002)
+    target = User.query.filter_by(student_id=student_id).first()
+    if target is None:
+        return fail("该学号尚未登录过本系统，无法设置", code=1002)
+    if target.role == "superadmin":
+        return fail("不能修改超级管理员的角色", code=1002)
+    if target.id == g.user.id:
+        return fail("不能修改自己的角色", code=1002)
+
+    target.role = role
+    log_action(g.user.id, "set_role", f"{target.student_id} → {role}")
+    db.session.commit()
+    return ok(target.to_dict(), msg=f"已{'设为管理员' if role == 'admin' else '移除管理员'}")
