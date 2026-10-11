@@ -73,6 +73,8 @@ class PrintApplication(db.Model):
     reviewer_sign = db.Column(db.String(255), nullable=True, comment="审核人签名")
     feedback_url = db.Column(db.String(255), nullable=True, comment="反馈图片路径（实物图/现场照片）")
     feedback_at = db.Column(db.DateTime, nullable=True, comment="反馈时间")
+    feedback_reviewed = db.Column(db.Boolean, nullable=True, default=None,
+                                  comment="反馈审核：None=无需审核或已拒绝 0=待审核 1=通过")
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.now)
     updated_at = db.Column(db.DateTime, nullable=False, default=datetime.now, onupdate=datetime.now)
 
@@ -97,6 +99,7 @@ class PrintApplication(db.Model):
             "reviewer_sign": self.reviewer_sign,
             "feedback_url": self.feedback_url,
             "feedback_at": _fmt(self.feedback_at),
+            "feedback_reviewed": self.feedback_reviewed,
             "created_at": _fmt(self.created_at),
             "updated_at": _fmt(self.updated_at),
             "timeline": self.timeline(),
@@ -255,6 +258,29 @@ class ConsumableLog(db.Model):
             "operator": self.operator.name if self.operator else None,
             "operator_id": self.operator_id,
             "note": self.note,
+            "created_at": _fmt(self.created_at),
+        }
+
+
+class Printer(db.Model):
+    """拓竹 3D 打印机：局域网 MQTT 直连，访问码即打印机屏上显示的访问码。"""
+
+    __tablename__ = "printers"
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    name = db.Column(db.String(64), nullable=False, comment="打印机名称")
+    ip = db.Column(db.String(64), nullable=False, comment="打印机局域网 IP")
+    access_code = db.Column(db.String(64), nullable=False, comment="访问码")
+    serial = db.Column(db.String(64), nullable=True, comment="序列号（MQTT 连接后自动发现）")
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.now)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "ip": self.ip,
+            "access_code": self.access_code,
+            "serial": self.serial,
             "created_at": _fmt(self.created_at),
         }
 

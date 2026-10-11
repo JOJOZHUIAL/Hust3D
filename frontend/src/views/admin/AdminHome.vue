@@ -36,6 +36,12 @@
         <div class="hub-desc">添加与移除管理员</div>
       </div>
 
+      <div class="hub-item" @click="$router.push('/admin/printers')">
+        <div class="hub-icon" style="--c: #00b8d4"><van-icon name="printer" /></div>
+        <div class="hub-name">打印机监视</div>
+        <div class="hub-desc">拓竹打印机实时状态</div>
+      </div>
+
       <div class="hub-item" @click="$router.push('/admin/consumables')">
         <div class="hub-icon" style="--c: #7232dd"><van-icon name="scan" /></div>
         <div class="hub-name">耗材管理</div>

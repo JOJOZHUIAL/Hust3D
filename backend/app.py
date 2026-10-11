@@ -36,6 +36,20 @@ FRONTEND_DIST = os.path.abspath(
 )
 
 
+def _ensure_columns():
+    """老库自动补新增列（当前：print_applications.feedback_reviewed）。"""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(db.engine)
+    cols = {c["name"] for c in insp.get_columns("print_applications")}
+    if "feedback_reviewed" not in cols:
+        ddl = "ALTER TABLE print_applications ADD COLUMN feedback_reviewed TINYINT(1) NULL"
+        if db.engine.name == "mysql":
+            ddl += " COMMENT '反馈审核：None=无需审核 0=待审核 1=通过 2=拒绝' AFTER feedback_at"
+        db.session.execute(text(ddl))
+        db.session.commit()
+
+
 def _lan_ips():
     """收集本机局域网 IPv4（主出口 IP 优先）。"""
     import socket
@@ -93,7 +107,14 @@ def create_app():
     # 启动时自动补建缺失的表（只建缺的、不动已有结构），新机器部署无需手动执行 schema.sql；
     # 完整建表脚本仍以 sql/schema.sql 为准（含注释与索引说明）
     with app.app_context():
+        import models  # noqa: F401  先注册全部模型，create_all 才能建出所有表
         db.create_all()
+        # 已存在的表补缺失列（新增字段时老库自动迁移）
+        _ensure_columns()
+
+        # 启动拓竹打印机状态监视（有配置打印机时建立 MQTT 连接）
+        from services import bambu
+        bambu.sync_with_db(app)
 
     # 注册蓝图（此处 import 避免循环依赖）
     from blueprints.auth import bp as auth_bp
@@ -104,6 +125,7 @@ def create_app():
     from blueprints.notice import bp as notice_bp
     from blueprints.consumable import bp as consumable_bp
     from blueprints.notification import bp as notification_bp
+    from blueprints.printer import bp as printer_bp
 
     app.register_blueprint(auth_bp, url_prefix="/api/auth")
     app.register_blueprint(user_bp, url_prefix="/api/user")
@@ -112,6 +134,7 @@ def create_app():
     app.register_blueprint(chat_bp, url_prefix="/api/chat")
     app.register_blueprint(notice_bp, url_prefix="/api/notice")
     app.register_blueprint(consumable_bp, url_prefix="/api/consumable")
+    app.register_blueprint(printer_bp, url_prefix="/api/printer")
     app.register_blueprint(notification_bp, url_prefix="/api/notification")
 
     @app.route("/api/health")

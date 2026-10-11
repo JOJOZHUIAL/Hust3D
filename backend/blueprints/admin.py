@@ -162,3 +162,55 @@ def set_role():
     log_action(g.user.id, "set_role", f"{target.student_id} → {role}")
     db.session.commit()
     return ok(target.to_dict(), msg=f"已{'设为管理员' if role == 'admin' else '移除管理员'}")
+
+
+@bp.route("/feedback/review", methods=["POST"])
+@admin_required
+def feedback_review():
+    """审核用户反馈：approve=通过（+1 奖励）；reject=拒绝（可重新上传）。"""
+    data = request.get_json(silent=True) or {}
+    app_id = data.get("id")
+    action = data.get("action")
+    if action not in ("approve", "reject"):
+        return fail("无效的审核操作", code=1002)
+
+    app_obj = db.session.get(PrintApplication, app_id)
+    if app_obj is None:
+        return fail("申请不存在", code=404, http_status=404)
+    if not app_obj.feedback_url or app_obj.feedback_reviewed != 0:
+        return fail("该申请没有待审核的反馈", code=1002)
+
+    # 奖励次数由管理员自选（0 = 仅通过不奖励）
+    try:
+        reward = int(data.get("reward", 1))
+    except (TypeError, ValueError):
+        reward = 1
+    if reward < 0 or reward > 50:
+        return fail("奖励次数须为 0-50", code=1002)
+
+    if action == "approve":
+        app_obj.feedback_reviewed = 1
+        user = app_obj.user
+        from services.quota import ensure_quota
+        ensure_quota(user)
+        if reward:
+            user.remaining_quota += reward
+        notify_user(user.id, "status", "反馈审核通过",
+                    (f"申请 {app_obj.apply_no} 的反馈已确认，奖励 {reward} 次打印机会"
+                     if reward else f"申请 {app_obj.apply_no} 的反馈已确认"),
+                    link=f"/application/{app_obj.id}")
+        log_action(g.user.id, "feedback_review", f"通过 {app_obj.apply_no} 的反馈，奖励 {reward} 次")
+        msg = f"已通过，奖励 {reward} 次已发放" if reward else "已通过，未发放奖励"
+    else:
+        # 拒绝：清掉反馈回到「未反馈」状态（feedback_reviewed 回到 None），学生可重新上传
+        app_obj.feedback_reviewed = None
+        app_obj.feedback_url = None
+        app_obj.feedback_at = None
+        notify_user(app_obj.user_id, "status", "反馈未通过",
+                    f"申请 {app_obj.apply_no} 的反馈未通过审核，可重新上传",
+                    link=f"/application/{app_obj.id}")
+        log_action(g.user.id, "feedback_review", f"拒绝 {app_obj.apply_no} 的反馈")
+        msg = "已拒绝，学生可重新上传"
+
+    db.session.commit()
+    return ok(app_obj.to_dict(), msg=msg)

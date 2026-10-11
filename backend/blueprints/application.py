@@ -19,7 +19,7 @@ from utils.response import ok, fail
 from utils.auth import login_required
 from services.quota import ensure_quota
 from services.logger import log_action
-from services.notify import notify_admins
+from services.notify import notify_admins, notify_user
 from services.form_export import generate_application_docx
 
 bp = Blueprint("application", __name__)
@@ -216,7 +216,7 @@ def detail(app_id):
     app_obj = db.session.get(PrintApplication, app_id)
     if app_obj is None:
         return fail("申请不存在", code=404, http_status=404)
-    if app_obj.user_id != g.user.id and g.user.role != "admin":
+    if app_obj.user_id != g.user.id and g.user.role not in ("admin", "superadmin"):
         return fail("无权查看该申请", code=403, http_status=403)
     return ok(app_obj.to_dict())
 
@@ -228,7 +228,7 @@ def export_word(app_id):
     app_obj = db.session.get(PrintApplication, app_id)
     if app_obj is None:
         return fail("申请不存在", code=404, http_status=404)
-    if app_obj.user_id != g.user.id and g.user.role != "admin":
+    if app_obj.user_id != g.user.id and g.user.role not in ("admin", "superadmin"):
         return fail("无权导出该申请", code=403, http_status=403)
 
     buf = generate_application_docx(app_obj, current_app.config["UPLOAD_DIR"])
@@ -264,11 +264,20 @@ def feedback(app_id):
     app_obj.feedback_url = feedback_url
     app_obj.feedback_at = datetime.now()
 
-    # 反馈成功奖励 1 次打印机会（先确保配额为当前学期值）
-    ensure_quota(user)
-    user.remaining_quota += 1
-
-    log_action(user.id, "feedback", f"订单 {app_obj.apply_no} 提交反馈，奖励 1 次打印机会")
+    # 奖励模式由 FEEDBACK_REWARD_MODE 决定：auto=自动+1；review=管理员审核后 +1
+    if current_app.config.get("FEEDBACK_REWARD_MODE") == "review":
+        app_obj.feedback_reviewed = False
+        notify_admins("feedback", f"新反馈待审核 {app_obj.apply_no}",
+                      f"{user.name or user.student_id} 上传了实物图，请在审核后发放奖励",
+                      link="/admin/pending")
+        msg = "反馈已提交，等待管理员审核"
+        log_action(user.id, "feedback", f"订单 {app_obj.apply_no} 提交反馈（待审核）")
+    else:
+        app_obj.feedback_reviewed = True
+        ensure_quota(user)
+        user.remaining_quota += 1
+        msg = "反馈成功，已奖励 1 次打印机会"
+        log_action(user.id, "feedback", f"订单 {app_obj.apply_no} 提交反馈，自动奖励 1 次打印机会")
 
     try:
         db.session.commit()
@@ -276,4 +285,4 @@ def feedback(app_id):
         db.session.rollback()
         return fail("反馈提交失败，请重试", code=500, http_status=500)
 
-    return ok(app_obj.to_dict(), msg="反馈成功，已奖励 1 次打印机会")
+    return ok(app_obj.to_dict(), msg=msg)

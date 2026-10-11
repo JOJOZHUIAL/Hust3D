@@ -20,6 +20,7 @@ os.environ["DATABASE_URL"] = "sqlite:///./smoke.db"
 os.environ["CAS_MOCK"] = "1"
 os.environ["ADMIN_STUDENT_IDS"] = "20260001"
 os.environ["SUPER_ADMIN_STUDENT_IDS"] = "20260001"
+os.environ["FEEDBACK_REWARD_MODE"] = "auto"
 
 from app import app  # noqa: E402
 from extensions import db  # noqa: E402
@@ -145,6 +146,7 @@ def main():
                content_type="multipart/form-data")
     fb = r.get_json()["data"]
     check("反馈成功返回 feedback_url", bool(fb.get("feedback_url")), fb)
+    print("   [debug] feedback msg:", r.get_json().get("msg"), "| reviewed:", fb.get("feedback_reviewed"))
     check("反馈后 quota 奖励为 2",
           c.get("/api/user/quota", headers=headers).get_json()["data"]["remaining"] == 2)
     r = c.post(f"/api/application/feedback/{app_id}", headers=headers,
@@ -377,6 +379,77 @@ def main():
     r = c.delete(f"/api/consumable/logs/{own_open['id']}", headers=headers)
     check("撤回本人拆封记录", r.get_json().get("code") == 0 and
           (r.get_json().get("data") or {}).get("quantity") == qty_after_open + 1, r.get_json())
+
+    # 7.16 反馈审核模式 + 打印机管理接口
+    # 切到 review 模式
+    app.config["FEEDBACK_REWARD_MODE"] = "review"
+
+    # 学生重新提交申请 → 管理员审批 → 打印 → 完成 → 学生反馈（不自动 +1）
+    r = c.post("/api/application/submit", data=make_data(purpose="club"), headers=stu_headers,
+               content_type="multipart/form-data")
+    check("review模式学生提交申请", r.get_json().get("code") == 0, r.get_json())
+    rid = (r.get_json().get("data") or {}).get("id")
+    c.post("/api/admin/application/review", headers=headers, json={"id": rid, "action": "approve"})
+    c.put("/api/admin/application/status", headers=headers, json={"id": rid, "status": "printing"})
+    c.put("/api/admin/application/status", headers=headers, json={"id": rid, "status": "completed"})
+
+    r = c.get("/api/user/quota", headers=stu_headers)
+    q_before = (r.get_json().get("data") or {}).get("remaining")
+    r = c.post(f"/api/application/feedback/{rid}", headers=stu_headers,
+               data={"file": (io.BytesIO(b"fake png bytes"), "r.png")},
+               content_type="multipart/form-data")
+    fb = r.get_json()
+    check("review模式反馈提交成功不自动+1", fb.get("code") == 0 and fb["data"]["feedback_reviewed"] == False, fb)  # noqa: E712
+    r = c.get("/api/user/quota", headers=stu_headers)
+    check("review模式未自动奖励", (r.get_json().get("data") or {}).get("remaining") == q_before)
+
+    r = c.post("/api/admin/feedback/review", headers=headers, json={"id": rid, "action": "approve"})
+    check("管理员审核通过", r.get_json().get("code") == 0, r.get_json())
+    r = c.get("/api/user/quota", headers=stu_headers)
+    check("审核通过后奖励+1", (r.get_json().get("data") or {}).get("remaining") == q_before + 1, r.get_json())
+
+    # 自定义奖励次数：新申请走完整流程，reward=3
+    r = c.post("/api/application/submit", data=make_data(purpose="competition"), headers=stu_headers,
+               content_type="multipart/form-data")
+    check("review模式再次提交", r.get_json().get("code") == 0, r.get_json())
+    rid2 = (r.get_json().get("data") or {}).get("id")
+    c.post("/api/admin/application/review", headers=headers, json={"id": rid2, "action": "approve"})
+    c.put("/api/admin/application/status", headers=headers, json={"id": rid2, "status": "printing"})
+    c.put("/api/admin/application/status", headers=headers, json={"id": rid2, "status": "completed"})
+    r = c.post(f"/api/application/feedback/{rid2}", headers=stu_headers,
+               data={"file": (io.BytesIO(b"fake png 2"), "r2.png")},
+               content_type="multipart/form-data")
+    check("第二次反馈提交", r.get_json().get("code") == 0, r.get_json())
+    r = c.get("/api/user/quota", headers=stu_headers)
+    q2 = (r.get_json().get("data") or {}).get("remaining")
+    r = c.post("/api/admin/feedback/review", headers=headers, json={"id": rid2, "action": "approve", "reward": 3})
+    check("自定义奖励3次审核通过", r.get_json().get("code") == 0, r.get_json())
+    r = c.get("/api/user/quota", headers=stu_headers)
+    check("自定义奖励+3", (r.get_json().get("data") or {}).get("remaining") == q2 + 3, r.get_json())
+    r = c.post("/api/admin/feedback/review", headers=headers, json={"id": rid2, "action": "approve", "reward": 99})
+    check("奖励越界被拦截", r.get_json().get("code") == 1002, r.get_json())
+
+    # 打印机接口：添加 → 列表 → 状态(离线快照) → 删除
+    r = c.post("/api/printer/add", headers=headers,
+               json={"name": "拓竹A1mini", "ip": "192.168.1.128", "access_code": "ed904e57"})
+    check("添加打印机", r.get_json().get("code") == 0, r.get_json())
+    pid = (r.get_json().get("data") or {}).get("id")
+
+    r = c.get("/api/printer/list", headers=headers)
+    plist = r.get_json().get("data") or []
+    check("打印机清单含新机", any(x["name"] == "拓竹A1mini" for x in plist), plist)
+
+    r = c.get(f"/api/printer/{pid}/status", headers=headers)
+    snap = r.get_json().get("data") or {}
+    check("打印机状态快照返回", r.get_json().get("code") == 0 and "online" in snap, snap)
+
+    r = c.delete(f"/api/printer/delete/{pid}", headers=headers)
+    check("删除打印机", r.get_json().get("code") == 0, r.get_json())
+    r = c.get("/api/printer/list", headers=headers)
+    check("删除后清单为空", (r.get_json().get("data") or []) == [], r.get_json())
+
+    # 恢复 auto 模式
+    app.config["FEEDBACK_REWARD_MODE"] = "auto"
 
     # 8. 退出登录
     r = c.post("/api/auth/logout", headers=headers)

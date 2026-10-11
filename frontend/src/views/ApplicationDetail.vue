@@ -11,8 +11,9 @@
           <van-tag :color="STATUS[detail.status]?.color" size="large" round>
             {{ STATUS[detail.status]?.text }}
           </van-tag>
-          <van-tag v-if="detail.feedback_url" color="#07c160" size="large" round>已反馈</van-tag>
-          <van-tag v-else-if="detail.status === 'completed'" color="#ff976a" size="large" round>未反馈</van-tag>
+          <van-tag v-if="detail.feedback_url && detail.feedback_reviewed === false" color="#ffd21e" size="large" round>反馈审核中</van-tag>
+          <van-tag v-else-if="detail.feedback_url" color="#07c160" size="large" round>已反馈</van-tag>
+          <van-tag v-else-if="detail.status === 'completed' && detail.feedback_reviewed !== 2" color="#ff976a" size="large" round>未反馈</van-tag>
         </div>
         <div class="apply-no">{{ detail.apply_no }}</div>
       </div>
@@ -92,8 +93,15 @@
               </template>
             </van-cell>
             <van-cell title="反馈时间" :value="detail.feedback_at || '—'" />
+          <van-cell v-if="detail.feedback_reviewed === false" title="审核状态" value="待管理员审核" />
+          <van-cell v-else-if="detail.feedback_reviewed === 1" title="审核状态" value="已通过" />
           </van-cell-group>
         </template>
+        <!-- 管理员：反馈审核 -->
+        <div v-if="isAdmin && detail.feedback_reviewed === false" class="action-bar">
+          <van-button type="success" round block @click="reviewShow = true">反馈通过（自选奖励）</van-button>
+          <van-button type="danger" round block plain style="margin-top: 10px" @click="onFeedbackReview('reject')">反馈拒绝（可重传）</van-button>
+        </div>
         <div v-else class="action-bar">
           <van-uploader :after-read="onUploadFeedback" accept="image/*" :max-count="1">
             <van-button round block type="primary" :loading="submittingFeedback">
@@ -126,6 +134,23 @@
         </van-button>
       </div>
     </template>
+
+    <!-- 反馈通过：自选奖励次数 -->
+    <van-dialog
+      v-model:show="reviewShow"
+      title="反馈通过"
+      show-cancel-button
+      :before-close="beforeReviewClose"
+    >
+      <div class="review-box">
+        <van-cell title="奖励次数">
+          <template #right-icon>
+            <van-stepper v-model="reward" min="0" max="50" integer style="margin-left: 10px" />
+          </template>
+        </van-cell>
+        <p class="review-tip">填 0 表示仅通过、不发放奖励</p>
+      </div>
+    </van-dialog>
   </div>
 </template>
 
@@ -134,7 +159,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { showConfirmDialog, showSuccessToast, showImagePreview } from 'vant'
 import { getApplicationDetail, submitFeedback, exportApplicationForm, downloadBlob } from '../api/application'
-import { updateApplicationStatus } from '../api/admin'
+import { updateApplicationStatus, reviewFeedback } from '../api/admin'
 import { useAuthStore } from '../store/auth'
 import { assetUrl } from '../utils/server'
 import { STATUS, PURPOSE_TEXT } from '../utils/constants'
@@ -214,6 +239,33 @@ function previewSign() {
   }
 }
 
+const reviewShow = ref(false)
+const reward = ref(1)
+
+function beforeReviewClose(action) {
+  if (action === 'confirm') {
+    onFeedbackReview('approve', reward.value)
+  }
+  return true
+}
+
+async function onFeedbackReview(action, rewardCount = 1) {
+  if (action === 'reject') {
+    const text = '拒绝该反馈？学生可重新上传。'
+    try {
+      await showConfirmDialog({ title: '反馈审核', message: text })
+    } catch (e) {
+      return
+    }
+  }
+  try {
+    detail.value = await reviewFeedback({ id: detail.value.id, action, reward: rewardCount })
+    showSuccessToast(action === 'approve' ? `已通过，奖励 ${rewardCount} 次已发放` : '已拒绝')
+  } catch (e) {
+    /* 拦截器已提示 */
+  }
+}
+
 async function advance(status) {
   const text = status === 'printing' ? '确定开始打印该申请吗？' : '确定标记为已完成吗？'
   try {
@@ -232,6 +284,14 @@ async function advance(status) {
 </script>
 
 <style scoped>
+.review-box {
+  padding: 12px 16px 4px;
+}
+.review-tip {
+  margin: 8px 4px 0;
+  font-size: 12px;
+  color: #969799;
+}
 .status-banner {
   display: flex;
   flex-direction: column;

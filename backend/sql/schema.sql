@@ -171,3 +171,18 @@ CREATE TABLE IF NOT EXISTS notifications (
   KEY idx_read (is_read),
   CONSTRAINT fk_notice_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='站内通知';
+
+-- ---------------------------------------------------------------
+-- 8. 打印机表 printers（拓竹 MQTT 监视）+ 反馈审核列迁移
+-- ---------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS printers (
+  id          INT         NOT NULL AUTO_INCREMENT COMMENT '主键',
+  name        VARCHAR(64) NOT NULL COMMENT '打印机名称',
+  ip          VARCHAR(64) NOT NULL COMMENT '打印机局域网 IP',
+  access_code VARCHAR(64) NOT NULL COMMENT '访问码',
+  serial      VARCHAR(64) NULL COMMENT '序列号（MQTT 连接后自动发现）',
+  created_at  DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  PRIMARY KEY (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='拓竹打印机';
+
+-- 老库补列：ALTER TABLE print_applications ADD COLUMN feedback_reviewed TINYINT(1) NULL AFTER feedback_at;

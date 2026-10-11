@@ -58,6 +58,8 @@ class Config:
 
     # —— 业务 ——
     DEFAULT_QUOTA = int(os.getenv("DEFAULT_QUOTA", "2"))  # 每学期默认打印次数
+    # 反馈奖励模式：auto=上传成功自动 +1；review=管理员审核通过后手动 +1
+    FEEDBACK_REWARD_MODE = os.getenv("FEEDBACK_REWARD_MODE", "auto")
     # 管理员学号清单（逗号分隔），命中即视为管理员角色
     ADMIN_STUDENT_IDS = [s.strip() for s in os.getenv("ADMIN_STUDENT_IDS", "").split(",") if s.strip()]
     # 超级管理员学号清单：可添加/移除管理员（含于 ADMIN_STUDENT_IDS 之上使用）

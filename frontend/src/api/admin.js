@@ -18,3 +18,6 @@ export const getAdminList = () => request.get('/api/admin/admins')
 export const searchUsers = (keyword) => request.get('/api/admin/users/search', { params: { keyword } })
 
 export const setUserRole = (data) => request.post('/api/admin/set-role', data)
+
+// 反馈审核：approve=通过(+1)；reject=拒绝(可重传)
+export const reviewFeedback = (data) => request.post('/api/admin/feedback/review', data)
