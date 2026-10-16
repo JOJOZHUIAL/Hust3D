@@ -158,7 +158,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { showConfirmDialog, showSuccessToast, showImagePreview } from 'vant'
-import { getApplicationDetail, submitFeedback, exportApplicationForm, downloadBlob } from '../api/application'
+import { getApplicationDetail, submitFeedback, exportApplicationForm, downloadAttachment, downloadBlob } from '../api/application'
 import { updateApplicationStatus, reviewFeedback } from '../api/admin'
 import { useAuthStore } from '../store/auth'
 import { assetUrl } from '../utils/server'
@@ -188,15 +188,23 @@ async function load() {
   }
 }
 
-function downloadFile() {
-  if (detail.value?.file_url) window.open(assetUrl(detail.value.file_url))
+async function downloadFile() {
+  if (!detail.value?.file_url) return
+  try {
+    // 走命名下载接口：文件名为 姓名+申请编号（如 张三HUST3D20261011001.stl）
+    const res = await downloadAttachment(detail.value.id, 'model')
+    const ext = (detail.value.file_url || '').split('.').pop() || 'stl'
+    downloadBlob(res.data, `${detail.value.applicant?.name || ''}${detail.value.apply_no}.${ext}`)
+  } catch (e) {
+    /* 拦截器已提示 */
+  }
 }
 
 async function onExport() {
   exporting.value = true
   try {
     const res = await exportApplicationForm(detail.value.id)
-    downloadBlob(res.data, `3D打印服务申请表单-${detail.value.apply_no}.docx`)
+    downloadBlob(res.data, `${detail.value.applicant?.name || ''}${detail.value.apply_no}.docx`)
   } catch (e) {
     /* 拦截器已提示 */
   } finally {

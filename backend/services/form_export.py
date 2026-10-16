@@ -122,8 +122,8 @@ def _apply_compat(doc):
             compat.insert(0, compat.makeelement(qn(f"w:{name}"), {}))
 
 
-def generate_application_docx(app_obj, upload_dir):
-    """根据申请记录生成官方格式申请表，返回 BytesIO（docx 字节流）。"""
+def _build_application(doc, app_obj, upload_dir):
+    """把一份申请表追加到 doc 文档（含标题区到落款）。"""
     user = app_obj.user
     name = user.name if user else ""
     college = user.college if user else ""
@@ -132,17 +132,6 @@ def generate_application_docx(app_obj, upload_dir):
 
     created = app_obj.created_at
     date_str = f"{created.year} 年 {created.month} 月 {created.day} 日"
-
-    doc = Document()
-
-    # 与样表一致的兼容设置（行尾空格绘制下划线）
-    _apply_compat(doc)
-
-    # A4 页面与样表页边距
-    sec = doc.sections[0]
-    sec.page_width, sec.page_height = Cm(21.0), Cm(29.7)
-    sec.top_margin = sec.bottom_margin = Cm(2.54)
-    sec.left_margin = sec.right_margin = Cm(3.17)
 
     # 标题区
     _run(_para(doc, space_after=0), "附件1", 16, font="黑体")
@@ -234,6 +223,37 @@ def generate_application_docx(app_obj, upload_dir):
     ):
         _run(_para(doc, space_after=0), text, 7.5)
 
+    doc.add_page_break()
+
+
+def _new_form_doc():
+    """创建申请表文档：A4 页面、样表页边距、兼容设置。"""
+    doc = Document()
+    _apply_compat(doc)
+    sec = doc.sections[0]
+    sec.page_width, sec.page_height = Cm(21.0), Cm(29.7)
+    sec.top_margin = sec.bottom_margin = Cm(2.54)
+    sec.left_margin = sec.right_margin = Cm(3.17)
+    return doc
+
+
+def generate_application_docx(app_obj, upload_dir):
+    """根据申请记录生成官方格式申请表，返回 BytesIO（docx 字节流）。"""
+    doc = _new_form_doc()
+    _build_application(doc, app_obj, upload_dir)
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return buf
+
+
+def generate_batch_docx(applications, upload_dir):
+    """批量导出：多份申请表合并为一个 docx（每份一页，分页符隔开）。"""
+    doc = _new_form_doc()
+    for i, app_obj in enumerate(applications):
+        if i:
+            doc.add_page_break()
+        _build_application(doc, app_obj, upload_dir)
     buf = io.BytesIO()
     doc.save(buf)
     buf.seek(0)

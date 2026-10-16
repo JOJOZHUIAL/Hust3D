@@ -20,7 +20,12 @@ from utils.auth import login_required
 from services.quota import ensure_quota
 from services.logger import log_action
 from services.notify import notify_admins, notify_user
-from services.form_export import generate_application_docx
+from services.form_export import generate_application_docx, generate_batch_docx
+
+
+def _safe_name(s):
+    """去掉文件名非法字符（下载命名用）。"""
+    return re.sub(r'[\/:*?"<>|]', "", s or "").strip()
 
 bp = Blueprint("application", __name__)
 
@@ -232,13 +237,78 @@ def export_word(app_id):
         return fail("无权导出该申请", code=403, http_status=403)
 
     buf = generate_application_docx(app_obj, current_app.config["UPLOAD_DIR"])
-    filename = f"3D打印服务申请表单-{app_obj.apply_no}.docx"
+    owner_name = _safe_name(app_obj.user.name) if app_obj.user else ""
+    filename = f"{owner_name}{app_obj.apply_no}.docx"
     return send_file(
         buf,
         as_attachment=True,
         download_name=filename,
         mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
+
+
+@bp.route("/export-batch", methods=["GET"])
+@login_required
+def export_batch():
+    """批量导出申请表：多份合并为一个 Word（每份申请一页），仅限本人申请。"""
+    ids_raw = request.args.get("ids", "")
+    id_list = []
+    for part in ids_raw.split(","):
+        part = part.strip()
+        if part.isdigit():
+            id_list.append(int(part))
+    id_list = list(dict.fromkeys(id_list))[:100]  # 去重限 100 份
+    if not id_list:
+        return fail("请先筛选出要导出的申请", code=1002)
+
+    apps = (
+        PrintApplication.query.filter(
+            PrintApplication.id.in_(id_list),
+            PrintApplication.user_id == g.user.id,
+        )
+        .order_by(PrintApplication.created_at.asc())
+        .all()
+    )
+    if not apps:
+        return fail("没有可导出的申请", code=404, http_status=404)
+
+    buf = generate_batch_docx(apps, current_app.config["UPLOAD_DIR"])
+    filename = f"申请表_{len(apps)}份_{datetime.now().strftime('%Y%m%d')}.docx"
+    log_action(g.user.id, "export_batch", f"批量导出 {len(apps)} 份申请表")
+    return send_file(
+        buf,
+        as_attachment=True,
+        download_name=filename,
+        mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+
+
+@bp.route("/attachment/<int:app_id>", methods=["GET"])
+@login_required
+def attachment(app_id):
+    """下载申请相关附件（type=model：STL 模型；type=feedback：反馈图片）。
+
+    下载名统一为「姓名 + 申请编号 + 原扩展名」，不再暴露服务器随机文件名。
+    """
+    app_obj = db.session.get(PrintApplication, app_id)
+    if app_obj is None:
+        return fail("申请不存在", code=404, http_status=404)
+    if app_obj.user_id != g.user.id and g.user.role not in ("admin", "superadmin"):
+        return fail("无权下载该申请的附件", code=403, http_status=403)
+
+    ftype = request.args.get("type", "model")
+    rel = app_obj.file_url if ftype == "model" else app_obj.feedback_url if ftype == "feedback" else None
+    if not rel:
+        return fail("附件不存在", code=404, http_status=404)
+
+    abs_path = os.path.join(current_app.config["UPLOAD_DIR"], rel.split("uploads/", 1)[-1])
+    if not os.path.isfile(abs_path):
+        return fail("附件文件已丢失", code=404, http_status=404)
+
+    owner_name = _safe_name(app_obj.user.name) if app_obj.user else ""
+    ext = os.path.splitext(rel)[1] or ".bin"
+    download = f"{owner_name}{app_obj.apply_no}{ext}"
+    return send_file(abs_path, as_attachment=True, download_name=download)
 
 
 @bp.route("/feedback/<int:app_id>", methods=["POST"])

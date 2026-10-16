@@ -16,6 +16,14 @@ export const getApplicationDetail = (id) => request.get(`/api/application/detail
 export const exportApplicationForm = (id) =>
   request.get(`/api/application/export/${id}`, { responseType: 'blob' })
 
+// 下载申请附件（type=model: STL 模型 / feedback: 反馈图片），返回 blob 响应
+export const downloadAttachment = (id, ftype = 'model') =>
+  request.get(`/api/application/attachment/${id}`, { params: { type: ftype }, responseType: 'blob' })
+
+// 批量导出申请表（ids 逗号分隔，返回 blob 响应）
+export const exportBatchApplication = (ids) =>
+  request.get('/api/application/export-batch', { params: { ids }, responseType: 'blob' })
+
 // 触发浏览器下载 blob 文件
 export function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob)

@@ -451,6 +451,38 @@ def main():
     # 恢复 auto 模式
     app.config["FEEDBACK_REWARD_MODE"] = "auto"
 
+    # 7.17 批量导出 Word（日期筛选后前端传 ids）
+    r = c.get("/api/application/list", headers=stu_headers)
+    stu_apps = r.get_json().get("data") or []
+    ids = ",".join(str(x["id"]) for x in stu_apps)
+    r = c.get(f"/api/application/export-batch?ids={ids}", headers=stu_headers)
+    body = r.data or b""
+    check("批量导出返回 docx", r.status_code == 200 and body[:2] == b"PK", len(body))
+
+    # 用 python-docx 验证合并文档包含每份申请（按「申请日期」出现次数）
+    from docx import Document as _Doc
+    from io import BytesIO as _BIO
+    doc = _Doc(_BIO(body))
+    date_count = sum(1 for p in doc.paragraphs if (p.text or "").startswith("申请日期"))
+    check("合并文档含全部申请表", date_count == len(stu_apps), (date_count, len(stu_apps)))
+
+    r = c.get("/api/application/export-batch?ids=", headers=stu_headers)
+    check("空 ids 被拦截", r.get_json().get("code") == 1002, r.get_json())
+    r = c.get("/api/application/export-batch?ids=999999", headers=stu_headers)
+    check("无可导出申请被拦截", r.get_json().get("code") == 404, r.get_json())
+
+    # 7.18 附件命名下载：STL 模型以 姓名+申请编号 命名
+    r = c.get(f"/api/application/attachment/{app_id}", headers=headers)
+    check("附件下载返回原内容", r.status_code == 200 and r.data == b"fake stl binary content", r.status_code)
+    disp = r.headers.get("Content-Disposition", "")
+    check("附件名为姓名+申请编号", "attachment" in disp and "HUST3D" in disp, disp)
+
+    r = c.get(f"/api/application/attachment/{app_id}", headers=headers,
+              query_string={"type": "feedback"})
+    check("反馈图片附件可下载", r.status_code == 200, r.status_code)
+    r = c.get(f"/api/application/attachment/{app_id}")
+    check("未登录附件下载被拦截", r.status_code == 401, r.status_code)
+
     # 8. 退出登录
     r = c.post("/api/auth/logout", headers=headers)
     check("logout 返回成功", r.get_json().get("code") == 0)
