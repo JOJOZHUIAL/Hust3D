@@ -36,17 +36,54 @@ FRONTEND_DIST = os.path.abspath(
 )
 
 
+# 老库需要补的列：print_applications 新增字段（列名, 类型, MySQL 注释）
+# 顺序即执行顺序；已存在的列会被跳过，因此可重复执行。
+NEW_APPLICATION_COLUMNS = [
+    ("feedback_reviewed", "TINYINT(1) NULL", "反馈审核：None=无需审核 0=待审核 1=通过"),
+    ("reviewer_id", "INT NULL", "审批人 users.id"),
+    ("reviewer_name", "VARCHAR(64) NULL", "审批人姓名快照"),
+    ("reviewer_student_id", "VARCHAR(32) NULL", "审批人学号快照"),
+    ("printed_by_id", "INT NULL", "打印操作人 users.id"),
+    ("printed_by_name", "VARCHAR(64) NULL", "打印操作人姓名快照"),
+    ("printed_by_student_id", "VARCHAR(32) NULL", "打印操作人学号快照"),
+    ("completed_at", "DATETIME NULL", "打印完成时间（反馈计时起点）"),
+    ("expired_at", "DATETIME NULL", "反馈超时过期时间"),
+    ("sms_sent_at", "DATETIME NULL", "取件短信发送成功时间"),
+    ("sms_result", "VARCHAR(255) NULL", "取件短信发送结果"),
+    ("file_name", "VARCHAR(255) NULL", "STL 原始文件名（展示用）"),
+    ("printer_id", "INT NULL", "绑定的打印机 printers.id"),
+    ("printer_name", "VARCHAR(64) NULL", "打印机名称快照"),
+    ("print_state", "VARCHAR(16) NULL", "最近观察到的打印机状态 RUNNING/FINISH"),
+    ("print_progress", "INT NULL", "最近观察到的打印进度 0-100"),
+    ("print_actual_file", "VARCHAR(255) NULL", "打印机当前上报的真实文件名"),
+    ("print_matched", "TINYINT(1) NOT NULL DEFAULT 0", "打印机当前文件是否就是本申请"),
+    ("print_seen_running", "TINYINT(1) NOT NULL DEFAULT 0", "是否已确认打印机真的开始打印"),
+    ("completed_auto", "TINYINT(1) NOT NULL DEFAULT 0", "是否由打印机进度自动标记完成"),
+]
+
+
 def _ensure_columns():
-    """老库自动补新增列（当前：print_applications.feedback_reviewed）。"""
+    """老库自动补新增列（print_applications 的审批人/打印人/过期相关字段）。"""
     from sqlalchemy import inspect, text
 
     insp = inspect(db.engine)
-    cols = {c["name"] for c in insp.get_columns("print_applications")}
-    if "feedback_reviewed" not in cols:
-        ddl = "ALTER TABLE print_applications ADD COLUMN feedback_reviewed TINYINT(1) NULL"
-        if db.engine.name == "mysql":
-            ddl += " COMMENT '反馈审核：None=无需审核 0=待审核 1=通过 2=拒绝' AFTER feedback_at"
+    try:
+        cols = {c["name"] for c in insp.get_columns("print_applications")}
+    except Exception:
+        return  # 表还没建（create_all 之后不会出现，防御性返回）
+
+    missing = [(n, t, c) for n, t, c in NEW_APPLICATION_COLUMNS if n not in cols]
+    if not missing:
+        return
+
+    changed = False
+    for name, col_type, comment in missing:
+        ddl = f"ALTER TABLE print_applications ADD COLUMN {name} {col_type}"
+        if db.engine.name == "mysql" and comment:
+            ddl += f" COMMENT '{comment}'"
         db.session.execute(text(ddl))
+        changed = True
+    if changed:
         db.session.commit()
 
 
@@ -116,6 +153,16 @@ def create_app():
         from services import bambu
         bambu.sync_with_db(app)
 
+        # 启动「打印进度 → 自动完成」后台监视（可配置关闭，测试时关闭）
+        if app.config.get("PRINT_WATCH_ENABLED"):
+            from services import print_watch
+            print_watch.start_watcher(app, app.config.get("PRINT_WATCH_INTERVAL", 5))
+
+        # 启动短信队列重试：手机不在局域网时短信先存起来，网关恢复后自动补发
+        if app.config.get("SMS_ENABLED"):
+            from services import sms
+            sms.start_retry_worker(app)
+
     # 注册蓝图（此处 import 避免循环依赖）
     from blueprints.auth import bp as auth_bp
     from blueprints.user import bp as user_bp
@@ -126,6 +173,7 @@ def create_app():
     from blueprints.consumable import bp as consumable_bp
     from blueprints.notification import bp as notification_bp
     from blueprints.printer import bp as printer_bp
+    from blueprints.app_release import bp as app_release_bp
 
     app.register_blueprint(auth_bp, url_prefix="/api/auth")
     app.register_blueprint(user_bp, url_prefix="/api/user")
@@ -136,6 +184,7 @@ def create_app():
     app.register_blueprint(consumable_bp, url_prefix="/api/consumable")
     app.register_blueprint(printer_bp, url_prefix="/api/printer")
     app.register_blueprint(notification_bp, url_prefix="/api/notification")
+    app.register_blueprint(app_release_bp, url_prefix="/api/app")
 
     @app.route("/api/health")
     def health():

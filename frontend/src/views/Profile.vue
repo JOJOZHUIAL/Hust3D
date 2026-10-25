@@ -16,6 +16,14 @@
       <van-cell title="我的申请" icon="orders-o" is-link to="/applications" />
       <van-cell title="使用指南" icon="question-o" is-link to="/guide" />
       <van-cell
+        v-if="isNative"
+        title="检测更新"
+        icon="replay"
+        :value="appVersion ? `v${appVersion}` : ''"
+        is-link
+        @click="onCheckUpdate"
+      />
+      <van-cell
         title="联系工作室"
         icon="chat-o"
         is-link
@@ -28,6 +36,24 @@
       <van-button round block plain type="danger" @click="onLogout">退出登录</van-button>
     </div>
 
+    <!-- 发现新版本 -->
+    <van-dialog
+      v-model:show="updateShow"
+      title="发现新版本"
+      show-cancel-button
+      confirm-button-text="立即更新"
+      cancel-button-text="稍后再说"
+      @confirm="doUpdate"
+    >
+      <div class="upd-box">
+        <div class="upd-ver">v{{ updateInfo?.version_name || '' }}（{{ updateInfo?.version_code }}）</div>
+        <div v-if="updateInfo?.note" class="upd-note">{{ updateInfo.note }}</div>
+        <div class="upd-size" v-if="updateInfo?.file_size">
+          大小 {{ (updateInfo.file_size / 1024 / 1024).toFixed(1) }} MB
+        </div>
+      </div>
+    </van-dialog>
+
     <TabBar />
   </div>
 </template>
@@ -35,11 +61,12 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { showToast, showConfirmDialog } from 'vant'
+import { showToast, showFailToast, showConfirmDialog } from 'vant'
 import { getUserInfo, getQuota } from '../api/user'
 import { logout } from '../api/auth'
 import { useAuthStore } from '../store/auth'
-import { isNative as isNativePlatform, getServerBase, setServerBase } from '../utils/server'
+import { isNative as isNativePlatform, getServerBase, setServerBase, assetUrl } from '../utils/server'
+import { getLatestAppRelease } from '../api/app'
 import TabBar from '../components/TabBar.vue'
 
 const router = useRouter()
@@ -51,6 +78,49 @@ const remaining = ref(0)
 // App 模式：查看/修改后端服务器地址
 const isNative = isNativePlatform()
 const serverShort = computed(() => getServerBase() || '未设置')
+
+// —— 检测更新：对比 App 已装 versionCode 与服务器最新版本 ——
+const appVersion = ref('')
+const updateShow = ref(false)
+const updateInfo = ref(null)
+
+async function onCheckUpdate() {
+  if (!isNativePlatform()) {
+    showToast('网页版无需更新')
+    return
+  }
+  try {
+    const { App } = await import('@capacitor/app')
+    const info = await App.getInfo()
+    appVersion.value = info.version
+    const latest = await getLatestAppRelease()
+    if (latest && Number(latest.version_code) > Number(info.build)) {
+      updateInfo.value = latest
+      updateShow.value = true
+    } else {
+      showToast('已是最新版本')
+    }
+  } catch (e) {
+    showToast('检查更新失败，请稍后重试')
+  }
+}
+
+function doUpdate() {
+  if (!updateInfo.value) return
+  // WebView 里用 blob 下载触发安装（window.open 对 apk 无效）
+  fetch(assetUrl(updateInfo.value.file_url))
+    .then((r) => r.blob())
+    .then((blob) => {
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(blob)
+      a.download = 'hust3d.apk'
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(a.href)
+    })
+    .catch(() => showFailToast('下载失败，请稍后重试'))
+}
 
 function editServer() {
   showConfirmDialog({
@@ -104,6 +174,28 @@ async function onLogout() {
 </script>
 
 <style scoped>
+.upd-box {
+  padding: 14px 16px 6px;
+  text-align: center;
+}
+.upd-ver {
+  font-size: 15px;
+  font-weight: 600;
+  color: #2f6bff;
+}
+.upd-note {
+  margin-top: 8px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: #323233;
+  white-space: pre-wrap;
+  text-align: left;
+}
+.upd-size {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #969799;
+}
 .profile-header {
   display: flex;
   flex-direction: column;

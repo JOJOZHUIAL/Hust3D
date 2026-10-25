@@ -27,7 +27,16 @@
             <span class="p-state" :class="{ running: p.state === 'RUNNING' }">{{ p.state_text }}</span>
             <span v-if="p.percent != null && p.state === 'RUNNING'" class="p-percent">{{ p.percent }}%</span>
           </div>
-          <div class="p-task">{{ p.state === 'RUNNING' && p.print_file ? p.print_file : "N/A" }}</div>
+          <div class="p-task">{{ taskOf(p) }}</div>
+          <div v-if="actualsOf(p).length > 1" class="p-job">
+            {{ actualsOf(p).length }} 份申请 · 进度 {{ progressOf(p) }}%
+          </div>
+          <div v-else-if="actualsOf(p).length === 1" class="p-job">
+            申请 {{ actualsOf(p)[0].apply_no }} · 进度 {{ progressOf(p) }}%
+          </div>
+          <div v-else-if="assignmentsOf(p).length" class="p-job warn">
+            已指派 {{ assignmentsOf(p).map((a) => a.apply_no).join("、") }}（等待开始）
+          </div>
           <div class="p-ip">{{ p.ip }}</div>
           <van-button
             size="mini"
@@ -84,6 +93,26 @@ async function load() {
   } finally {
     loading.value = false
   }
+}
+
+// 卡片上显示打印机真实在打什么（优先打印机上报的 task_name）
+function taskOf(p) {
+  const task = p.job?.task || p.task_name || p.print_file
+  if (task) return task
+  return p.job?.assignments?.length ? '等待开始打印' : 'N/A'
+}
+
+function actualsOf(p) {
+  return p.job?.actuals || []
+}
+
+function assignmentsOf(p) {
+  return p.job?.assignments || []
+}
+
+function progressOf(p) {
+  const a = actualsOf(p)[0]
+  return a && a.progress != null ? a.progress : p.percent != null ? p.percent : 0
 }
 
 async function onAdd() {
@@ -223,6 +252,15 @@ onUnmounted(() => clearInterval(timer))
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.p-job {
+  margin-top: 2px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #2f6bff;
+}
+.p-job.warn {
+  color: #ff976a;
 }
 .p-ip {
   margin-top: 4px;

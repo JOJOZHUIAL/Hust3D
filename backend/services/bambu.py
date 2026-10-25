@@ -10,6 +10,7 @@
 import json
 import ssl
 import threading
+import time
 from datetime import datetime
 
 import paho.mqtt.client as mqtt
@@ -24,6 +25,8 @@ _app = None
 _clients = {}
 # printer_id -> 最新状态快照
 _snapshots = {}
+# printer_id -> 上次主动拉取全量状态的时间戳（做节流）
+_last_pull = {}
 _lock = threading.Lock()
 
 STATE_TEXT = {
@@ -63,7 +66,8 @@ def snapshot_for(printer):
     if snap:
         base.update(snap)
         base["online"] = True
-    return base
+    # 去掉内部字段（_client_id 等），不对外暴露
+    return {k: v for k, v in base.items() if not k.startswith("_")}
 
 
 def _clean_print_file(gcode_file):
@@ -89,6 +93,36 @@ def _on_connect(client, userdata, flags, reason_code, properties):
     client.subscribe("device/+/report", qos=0)
 
 
+def _publish_pushall(client, serial):
+    """向打印机请求一次全量状态（拓竹空闲时上报很少，主动拉取保证进度新鲜）。"""
+    if client is None or not serial:
+        return False
+    payload = {"pushing": {"sequence_id": str(int(time.time() * 1000) % 100000), "command": "pushall"}}
+    try:
+        client.publish(f"device/{serial}/request", json.dumps(payload), qos=0)
+        return True
+    except Exception:
+        return False
+
+
+def request_status(printer_id, force=False):
+    """主动向某台打印机拉一次全量状态；同一台机器 5 秒内不重复拉取。
+
+    返回是否真的发出了请求。打印机离线/未知序列号时返回 False（不报错）。
+    """
+    with _lock:
+        client = _clients.get(printer_id)
+        serial = (_snapshots.get(printer_id) or {}).get("serial")
+        last = _last_pull.get(printer_id, 0)
+
+    now = time.time()
+    if not force and now - last < 5:
+        return False
+    with _lock:
+        _last_pull[printer_id] = now
+    return _publish_pushall(client, serial)
+
+
 def _on_message(client, userdata, msg):
     try:
         payload = json.loads(msg.payload.decode("utf-8", "ignore"))
@@ -99,10 +133,13 @@ def _on_message(client, userdata, msg):
         return
     serial = parts[1]
     info = payload.get("print") or {}
+    learned_pid = None
     with _lock:
-        for snap in _snapshots.values():
+        for pid, snap in _snapshots.items():
             if snap.get("serial") == serial or (not snap.get("serial")):
                 # 单打印机 broker：仅一台设备，直接落快照
+                if not snap.get("serial"):
+                    learned_pid = pid  # 刚知道序列号 → 落库 + 主动要一次全量状态
                 snap["serial"] = serial
                 # 拓竹的报告分多条、字段不全：合并策略——新报告缺的字段保留旧值，
                 # 避免 remaining_time 等被后续轻量报告覆盖成空。
@@ -126,6 +163,35 @@ def _on_message(client, userdata, msg):
                     snap["print_file"] = pf
                 snap["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 break
+    if learned_pid is not None:
+        _publish_pushall(client, serial)
+        _save_serial_async(learned_pid, serial)
+
+
+def _save_serial_async(printer_id, serial):
+    """首次拿到序列号后落库。
+
+    注意不能在 MQTT 线程里直接用 ORM 对象：sync_with_db 结束时会话已关闭，
+    对象处于 detached 状态，赋值后 commit 不会产生任何 UPDATE。这里在新线程的
+    应用上下文里按 id 重新取一次再写。
+    """
+    if _app is None:
+        return
+
+    def run():
+        try:
+            with _app.app_context():
+                row = db.session.get(Printer, printer_id)
+                if row is not None and row.serial != serial:
+                    row.serial = serial
+                    db.session.commit()
+        except Exception:
+            try:
+                db.session.rollback()
+            except Exception:
+                pass
+
+    threading.Thread(target=run, daemon=True, name=f"bambu-serial-{printer_id}").start()
 
 
 def _on_disconnect(client, userdata, disconnect_flags, reason_code, properties=None):
@@ -173,27 +239,7 @@ def start_client(printer):
         t = threading.Thread(target=loop, daemon=True, name=f"bambu-{printer.id}")
         t.start()
         _clients[printer.id] = client
-
-        # 首次序列号落库（MQTT 连上后自动发现）
-        def _save_serial():
-            import time
-
-            for _ in range(40):  # 最多等 20 秒
-                time.sleep(0.5)
-                with _lock:
-                    serial = _snapshots.get(printer.id, {}).get("serial")
-                if serial and printer.serial == serial:
-                    return
-                if serial and not printer.serial:
-                    try:
-                        with _app.app_context() if _app else _null_ctx():
-                            printer.serial = serial
-                            db.session.commit()
-                    except Exception:
-                        db.session.rollback()
-                    return
-
-        threading.Thread(target=_save_serial, daemon=True).start()
+        # 序列号在收到第一条上报时由 _on_message → _save_serial_async 落库
 
 
 def stop_client(printer_id):
@@ -206,16 +252,6 @@ def stop_client(printer_id):
             client.loop_stop()
         except Exception:
             pass
-
-
-class _null_ctx:
-    """无 Flask 时的空上下文占位（smoke/脚本场景兜底）。"""
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
 
 
 def sync_with_db(app=None):

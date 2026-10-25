@@ -55,7 +55,12 @@ const loading = ref(true)
 async function load() {
   loading.value = true
   try {
-    list.value = await getNotificationList()
+    const rows = await getNotificationList()
+    // 未读的排最上面（组内按时间倒序，后端已按时间倒序返回）
+    list.value = [
+      ...rows.filter((x) => !x.is_read),
+      ...rows.filter((x) => x.is_read),
+    ]
   } catch (e) {
     /* 拦截器已提示 */
   } finally {

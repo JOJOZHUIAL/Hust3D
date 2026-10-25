@@ -5,6 +5,7 @@
 产物：android/app/build/outputs/apk/debug/app-debug.apk
 """
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -16,6 +17,28 @@ JAVA_HOME = r"C:\Program Files\Microsoft\jdk-21.0.11.10-hotspot"
 SDK_DIR = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Android", "Sdk")
 APK_SRC = os.path.join(BUILD_DIR, "app", "build", "outputs", "apk", "debug", "app-debug.apk")
 APK_DST = os.path.join(FRONTEND, "android", "app", "build", "outputs", "apk", "debug", "app-debug.apk")
+GRADLE = os.path.join(FRONTEND, "android", "app", "build.gradle")
+
+
+def bump_version():
+    """每次打包把 versionCode +1、versionName 同步为 1.<code>。
+
+    App 的更新提示就是比较 versionCode，所以必须保证每次打包都比上次大；
+    打包结束会打印这两个值，上传 APK 时按它填版本号即可。
+    """
+    with open(GRADLE, encoding="utf-8") as f:
+        s = f.read()
+    m = re.search(r"versionCode\s+(\d+)", s)
+    if not m:
+        print("[WARN] build.gradle 里没找到 versionCode，跳过版本递增")
+        return None, None
+    code = int(m.group(1)) + 1
+    name = f"1.{code}"
+    s = re.sub(r"versionCode\s+\d+", f"versionCode {code}", s, count=1)
+    s = re.sub(r'versionName\s+"[^"]*"', f'versionName "{name}"', s, count=1)
+    with open(GRADLE, "w", encoding="utf-8") as f:
+        f.write(s)
+    return name, code
 
 
 def run(cmd, cwd=None, check=True, shell=False):
@@ -37,7 +60,16 @@ def main():
     run("npm run build", shell=True)
 
     print("[2/5] 同步到安卓工程...")
-    run("npx cap sync android", shell=True)
+    # 用 cap copy（纯本地拷贝）而不是 cap sync：sync 还会去更新原生依赖，
+    # 偶尔会卡在网络上。只有「新增/升级 Capacitor 插件」时才需要手动跑一次
+    #   npx cap sync android
+    run("npx cap copy android", shell=True)
+
+    print("[2.5/5] 递增安卓版本号...")
+    ver_name, ver_code = bump_version()
+    if ver_code:
+        print(f"       本次版本：versionName={ver_name}  versionCode={ver_code}")
+        print(f"       上传 APK 时「版本号」填 {ver_code}，「版本名称」填 {ver_name}")
 
     print("[3/5] 准备英文路径构建目录（项目路径含中文，需镜像到 %s）..." % BUILD_DIR)
     # 清掉镜像里的旧构建产物，保留 Gradle 缓存以加速
@@ -95,7 +127,13 @@ def main():
     print("=" * 40)
     print(f"APK 已生成（{size_mb:.1f} MB）：")
     print(APK_DST.replace(PROJECT + os.sep, ""))
-    print("传到手机安装即可（首次需允许安装未知来源应用）。")
+    if ver_code:
+        print()
+        print(f"版本：versionName={ver_name}  versionCode={ver_code}")
+        print("到「管理后台 → 应用更新」上传该 APK 并填上面的版本号，")
+        print("已安装旧版的 App 下次启动就会弹更新提示。")
+    else:
+        print("传到手机安装即可（首次需允许安装未知来源应用）。")
     print("=" * 40)
 
 

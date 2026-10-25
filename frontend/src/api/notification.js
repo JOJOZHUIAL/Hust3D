@@ -16,3 +16,11 @@ export const readAllNotifications = () => request.post('/api/notification/read-a
 
 // 按类型已读（进入对应页面时调用），返回剩余未读数 { count }
 export const readTypeNotifications = (ntype) => request.post(`/api/notification/read-type/${ntype}`)
+
+// 待确认的取件提醒（首页弹窗用）：{ count, items: [{ id, title, body, application }] }
+export const getPickupReminders = (silent = true) =>
+  request.get('/api/notification/pickup', { silent })
+
+// 确认取件提醒（首页「我知道了」）：传 ids 只确认指定条目，不传则全部确认
+export const ackPickupReminders = (ids) =>
+  request.post('/api/notification/pickup/ack', ids && ids.length ? { ids } : {})

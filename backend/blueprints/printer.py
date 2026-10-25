@@ -4,7 +4,7 @@ from flask import Blueprint, request, g
 
 from extensions import db
 from models import Printer
-from services import bambu
+from services import bambu, print_watch
 from utils.response import ok, fail
 from utils.auth import admin_required
 from services.logger import log_action
@@ -12,10 +12,18 @@ from services.logger import log_action
 bp = Blueprint("printer", __name__)
 
 
+def _job(printer, snap):
+    """打印机当前任务解析：真正在打哪个申请（按文件名里的申请编号匹配）+ 已派单未开始。
+
+    不能拿「绑定关系」直接当成「正在打印」—— 打印机可能正在打别的文件。
+    """
+    return print_watch.job_info(printer.id, snap)
+
+
 @bp.route("/list", methods=["GET"])
 @admin_required
 def list_printers():
-    """打印机清单（含实时状态摘要）。"""
+    """打印机清单（含实时状态摘要、真实任务与指派的申请）。"""
     rows = Printer.query.order_by(Printer.id.asc()).all()
     data = []
     for p in rows:
@@ -27,6 +35,9 @@ def list_printers():
             "state": snap["state"],
             "percent": snap["percent"],
             "print_file": snap.get("print_file"),
+            "task_name": snap.get("task_name"),
+            "remaining_time": snap.get("remaining_time"),
+            "job": _job(p, snap),
         })
     return ok(data)
 
@@ -75,8 +86,9 @@ def delete_printer(printer_id):
 @bp.route("/<int:printer_id>/status", methods=["GET"])
 @admin_required
 def printer_status(printer_id):
-    """单台打印机实时状态（前端 5 秒轮询）。"""
+    """单台打印机实时状态（前端 5 秒轮询），附带真实任务与指派申请。"""
     printer = db.session.get(Printer, printer_id)
     if printer is None:
         return fail("打印机不存在", code=404, http_status=404)
-    return ok(bambu.snapshot_for(printer))
+    snap = bambu.snapshot_for(printer)
+    return ok({**snap, "job": _job(printer, snap)})

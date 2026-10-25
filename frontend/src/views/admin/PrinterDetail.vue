@@ -16,13 +16,70 @@
         :stroke-width="90"
         :text="percentText"
       />
-      <div class="pd-task">正在打印：{{ snap.print_file || "N/A" }}</div>
+      <div class="pd-task">正在打印：{{ taskFile }}</div>
+      <div v-if="actuals.length" class="pd-job">
+        对应 {{ actuals.length }} 份申请 · {{ actualApplicantText }} · 进度
+        {{ progressOf(actuals[0]) }}%（到 100% 自动标记完成）
+        <span v-if="actuals.some((a) => !a.tracked)"> · 有申请尚未在本系统点「开始打印」</span>
+      </div>
+      <div v-else-if="assignments.length" class="pd-job warn">
+        打印机正在打的文件里没有本申请的编号 · 已指派
+        {{ assignments.map((a) => a.apply_no).join("、") }} 等待开始
+      </div>
+      <div v-else-if="snap.online && job.task" class="pd-job">
+        正在打印的文件里没有申请编号，无法自动关联申请（可手动标记完成）
+      </div>
+      <div v-else-if="snap.online" class="pd-job">打印机空闲</div>
       <div class="pd-remain" v-if="snap.remaining_time != null && snap.state === 'RUNNING'">
         剩余约 {{ fmtRemain(snap.remaining_time) }} · 预计 {{ etaText }} 完成
       </div>
       <div class="pd-remain" v-else-if="snap.online">{{ snap.state === 'FINISH' ? '本次打印已完成' : '待机中' }}</div>
       <div class="pd-updated">更新于 {{ snap.updated_at || '—' }} · 每 5 秒自动刷新</div>
     </div>
+
+    <!-- 打印机真实任务（按文件名里的申请编号自动匹配，一盘多件会有多份） -->
+    <van-cell-group v-if="actuals.length" inset title="打印机正在打印的申请" style="margin-top: 14px">
+      <van-cell
+        v-for="a in actuals"
+        :key="a.id"
+        :title="a.apply_no"
+        :label="`${a.applicant || '—'} · ${a.file_name || '—'}`"
+      >
+        <template #value>
+          <span>{{ progressOf(a) }}%</span>
+        </template>
+      </van-cell>
+      <van-cell title="打印机文件名">
+        <template #value>
+          <span class="pd-file-name">{{ job.task || '—' }}</span>
+        </template>
+      </van-cell>
+      <van-cell>
+        <van-progress
+          :percentage="progressOf(actuals[0])"
+          :show-pivot="false"
+          stroke-width="6"
+          color="#1989fa"
+        />
+      </van-cell>
+    </van-cell-group>
+
+    <!-- 已指派到本机、但打印机还没开始打这些 -->
+    <van-cell-group v-if="assignments.length" inset title="已指派、等待开始打印" style="margin-top: 14px">
+      <van-cell
+        v-for="a in assignments"
+        :key="a.id"
+        :title="a.apply_no"
+        :label="`${a.applicant || '—'} · ${a.file_name || '—'}`"
+      />
+      <van-cell title="状态" value="打印机当前在打别的文件，等它开始打这单后会自动跟踪进度" />
+    </van-cell-group>
+
+    <p class="pd-tip">
+      自动完成按打印机上报的文件名里的申请编号匹配（拓竹的打印文件名形如
+      「丘馗HUST3D20261017005.stl」）。打印机在打别的文件、或文件名里没有申请编号时，
+      不会把本申请判为完成，可用「标记完成」人工处理。
+    </p>
 
     <!-- 温度面板 -->
     <div class="pd-grid">
@@ -61,6 +118,24 @@ const route = useRoute()
 const printerId = route.params.id
 const snap = ref({ name: '', ip: '', serial: null, online: false, state_text: '连接中' })
 let timer = null
+
+// 打印机当前任务（后端按文件名里的申请编号匹配，一盘多件会有多份）
+const job = computed(() => snap.value.job || {})
+const actuals = computed(() => job.value.actuals || [])
+const assignments = computed(() => job.value.assignments || [])
+// 打印机上报的真实文件名：优先 task_name（如 丘馗HUST3D20261017005 + … .stl）
+const taskFile = computed(
+  () => job.value.task || snap.value.task_name || snap.value.print_file || 'N/A',
+)
+// 一盘多件时列出涉及的学生
+const actualApplicantText = computed(() => {
+  const names = actuals.value.map((a) => a.applicant).filter(Boolean)
+  return names.length ? names.join("、") : "—"
+})
+
+function progressOf(a) {
+  return a && a.progress != null ? a.progress : 0
+}
 
 const percentRate = computed(() => Number(snap.value.percent) || 0)
 
@@ -135,6 +210,21 @@ onUnmounted(() => clearInterval(timer))
 .pd-remain {
   font-size: 14px;
   opacity: 0.92;
+}
+.pd-job {
+  font-size: 12px;
+  line-height: 1.6;
+  opacity: 0.9;
+  text-align: center;
+  padding: 0 8px;
+}
+.pd-job.warn {
+  color: #ffd21e;
+}
+.pd-file-name {
+  font-size: 12px;
+  word-break: break-all;
+  text-align: right;
 }
 .pd-updated {
   font-size: 11px;

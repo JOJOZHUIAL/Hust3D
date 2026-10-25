@@ -94,7 +94,7 @@ def stock_in():
         _write_log(item, "in", quantity, note=note or "首次入库")
         notify_admins("consumable", f"耗材入库：{name}",
                       f"{g.user.name or g.user.student_id} 入库 {quantity} {unit}，条码 {bc}",
-                      link="/admin/consumables")
+                      link="/admin/consumables", exclude_uid=g.user.id)
         log_action(g.user.id, "consumable_in", f"新耗材 {name}({bc}) 入库 {quantity}")
     else:
         item.quantity += quantity
@@ -105,7 +105,7 @@ def stock_in():
         _write_log(item, "in", quantity, note=note)
         notify_admins("consumable", f"耗材入库：{item.name}",
                       f"{g.user.name or g.user.student_id} 入库 {quantity}，现有 {item.quantity} {item.unit}",
-                      link="/admin/consumables")
+                      link="/admin/consumables", exclude_uid=g.user.id)
         log_action(g.user.id, "consumable_in", f"耗材 {item.name}({bc}) 入库 {quantity}")
 
     try:
@@ -136,7 +136,7 @@ def open_item():
     _write_log(item, "open", -1, note=note)
     notify_admins("consumable", f"耗材拆封：{item.name}",
                   f"{g.user.name or g.user.student_id} 拆封 1 {item.unit}，剩余 {item.quantity} {item.unit}",
-                  link="/admin/consumables")
+                  link="/admin/consumables", exclude_uid=g.user.id)
     log_action(g.user.id, "consumable_open", f"拆封 {item.name}({bc})，余 {item.quantity}")
 
     try:

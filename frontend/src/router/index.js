@@ -56,6 +56,16 @@ const routes = [
     name: 'admin-printer-detail',
     component: () => import('../views/admin/PrinterDetail.vue'),
   },
+  {
+    path: '/admin/app-update',
+    name: 'admin-app-update',
+    component: () => import('../views/admin/AppUpdate.vue'),
+  },
+  {
+    path: '/admin/sms',
+    name: 'admin-sms',
+    component: () => import('../views/admin/AdminSms.vue'),
+  },
 ]
 
 const router = createRouter({

@@ -14,18 +14,33 @@ from datetime import datetime
 
 from flask import Blueprint, request, g, current_app, send_file
 from extensions import db
-from models import PrintApplication
+from models import ChatMessage, PrintApplication, feedback_expire_days
 from utils.response import ok, fail
 from utils.auth import login_required
 from services.quota import ensure_quota
 from services.logger import log_action
 from services.notify import notify_admins, notify_user
-from services.form_export import generate_application_docx, generate_batch_docx
+from services.expiry import expire_stale_silently
+from services.form_export import generate_application_docx
 
 
 def _safe_name(s):
     """去掉文件名非法字符（下载命名用）。"""
     return re.sub(r'[\/:*?"<>|]', "", s or "").strip()
+
+
+def _remove_upload_files(urls):
+    """删除 uploads 下的物理文件（撤回申请时清理 STL / 签名图，失败不影响主流程）。"""
+    for rel in urls:
+        if not rel:
+            continue
+        try:
+            abs_path = os.path.join(current_app.config["UPLOAD_DIR"], rel.split("uploads/", 1)[-1])
+            if os.path.isfile(abs_path):
+                os.remove(abs_path)
+        except OSError:
+            current_app.logger.warning("删除附件失败：%s", rel)
+
 
 bp = Blueprint("application", __name__)
 
@@ -33,13 +48,14 @@ bp = Blueprint("application", __name__)
 ALLOWED_PURPOSE = ["course", "research", "competition", "graduation", "club", "other"]
 
 # 状态 -> 中文（供前端展示，也可由前端自行映射）
+# 注意：过期不是独立状态 —— 状态仍是 completed，用 expired_at 标记
 STATUS_SET = {"pending", "approved", "rejected", "printing", "completed", "cancelled"}
 
 
 def _save_stl(file_storage):
-    """校验并保存 STL 文件，返回落库用的相对 URL 路径（uploads/stl/...）。"""
+    """校验并保存 STL 文件，返回 (落库用相对 URL, 原始文件名)（uploads/stl/...）。"""
     if file_storage is None or file_storage.filename == "":
-        return None
+        return None, None
     if not file_storage.filename.lower().endswith(".stl"):
         raise ValueError("模型文件仅支持 .stl 格式")
 
@@ -54,7 +70,9 @@ def _save_stl(file_storage):
     os.makedirs(os.path.dirname(abs_path), exist_ok=True)
     with open(abs_path, "wb") as f:
         f.write(data)
-    return "uploads/" + sub  # 相对 URL，由 Nginx 的 /uploads/ 路径对外提供
+    # 原始文件名仅用于展示（如打印机状态页「正在打印 xxx.stl」），落盘名保持随机
+    original = os.path.basename(file_storage.filename.replace("\\", "/"))[:255]
+    return "uploads/" + sub, original  # 相对 URL，由 Nginx 的 /uploads/ 路径对外提供
 
 
 def _save_sign(sign_b64):
@@ -151,7 +169,7 @@ def submit():
 
     # 文件与签名（抛 ValueError 时转为业务错误）
     try:
-        file_url = _save_stl(request.files.get("file"))
+        file_url, file_name = _save_stl(request.files.get("file"))
         sign_url = _save_sign(form.get("sign", ""))
     except ValueError as e:
         return fail(str(e), code=1002)
@@ -174,6 +192,7 @@ def submit():
         material=material,
         model_count=model_count,
         file_url=file_url,
+        file_name=file_name,
         remark=remark,
         sign_url=sign_url,
         status="pending",
@@ -187,7 +206,7 @@ def submit():
     user.email = email
 
     # 提醒全部管理员有新申请
-    preview = f"{material} x{model_count} · {os.path.basename(file_url or '')}"
+    preview = f"{material} x{model_count} · {file_name or ''}"
     notify_admins("apply", f"新打印申请 {apply_no}",
                   f"{user.name or user.student_id} 提交了打印申请：{preview}",
                   link="/admin/pending")
@@ -206,9 +225,12 @@ def submit():
 @login_required
 def my_list():
     """获取我的申请列表，可按状态筛选。"""
+    expire_stale_silently()  # 先做过期扫描，保证「未反馈」不会一直挂着
     status = request.args.get("status", "")
     q = db.session.query(PrintApplication).filter_by(user_id=g.user.id)
-    if status in STATUS_SET:
+    if status == "expired":  # 伪状态：已完成且反馈超时
+        q = q.filter(PrintApplication.expired_at.isnot(None))
+    elif status in STATUS_SET:
         q = q.filter_by(status=status)
     rows = q.order_by(PrintApplication.created_at.desc()).all()
     return ok([r.to_dict() for r in rows])
@@ -218,12 +240,51 @@ def my_list():
 @login_required
 def detail(app_id):
     """获取申请详情（仅本人或管理员可见）。"""
+    expire_stale_silently()
     app_obj = db.session.get(PrintApplication, app_id)
     if app_obj is None:
         return fail("申请不存在", code=404, http_status=404)
     if app_obj.user_id != g.user.id and g.user.role not in ("admin", "superadmin"):
         return fail("无权查看该申请", code=403, http_status=403)
     return ok(app_obj.to_dict())
+
+
+@bp.route("/withdraw/<int:app_id>", methods=["POST"])
+@login_required
+def withdraw(app_id):
+    """撤回申请：仅限待审批状态。
+
+    提交后发现有误可撤回：直接删除申请记录与已上传的 STL / 签名文件，
+    并把提交时扣减的 1 次打印机会返还（即撤回不消耗打印次数）。
+    """
+    app_obj = db.session.get(PrintApplication, app_id)
+    if app_obj is None:
+        return fail("申请不存在", code=404, http_status=404)
+    if app_obj.user_id != g.user.id:
+        return fail("无权操作该申请", code=403, http_status=403)
+    if app_obj.status != "pending":
+        return fail("仅待审批的申请可以撤回，已进入审批流程请联系管理员", code=1002)
+
+    apply_no = app_obj.apply_no
+    file_urls = [app_obj.file_url, app_obj.sign_url]
+    db.session.delete(app_obj)
+
+    # 返还提交时扣掉的 1 次（撤回不消耗打印次数）
+    user = g.user
+    ensure_quota(user)
+    user.remaining_quota += 1
+    log_action(user.id, "withdraw_application",
+               f"撤回并删除申请 {apply_no}，返还 1 次打印机会")
+
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        return fail("撤回失败，请重试", code=500, http_status=500)
+
+    _remove_upload_files(file_urls)
+    return ok({"apply_no": apply_no, "remaining_quota": user.remaining_quota},
+              msg="申请已撤回删除，打印次数已返还")
 
 
 @bp.route("/export/<int:app_id>", methods=["GET"])
@@ -239,42 +300,6 @@ def export_word(app_id):
     buf = generate_application_docx(app_obj, current_app.config["UPLOAD_DIR"])
     owner_name = _safe_name(app_obj.user.name) if app_obj.user else ""
     filename = f"{owner_name}{app_obj.apply_no}.docx"
-    return send_file(
-        buf,
-        as_attachment=True,
-        download_name=filename,
-        mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    )
-
-
-@bp.route("/export-batch", methods=["GET"])
-@login_required
-def export_batch():
-    """批量导出申请表：多份合并为一个 Word（每份申请一页），仅限本人申请。"""
-    ids_raw = request.args.get("ids", "")
-    id_list = []
-    for part in ids_raw.split(","):
-        part = part.strip()
-        if part.isdigit():
-            id_list.append(int(part))
-    id_list = list(dict.fromkeys(id_list))[:100]  # 去重限 100 份
-    if not id_list:
-        return fail("请先筛选出要导出的申请", code=1002)
-
-    apps = (
-        PrintApplication.query.filter(
-            PrintApplication.id.in_(id_list),
-            PrintApplication.user_id == g.user.id,
-        )
-        .order_by(PrintApplication.created_at.asc())
-        .all()
-    )
-    if not apps:
-        return fail("没有可导出的申请", code=404, http_status=404)
-
-    buf = generate_batch_docx(apps, current_app.config["UPLOAD_DIR"])
-    filename = f"申请表_{len(apps)}份_{datetime.now().strftime('%Y%m%d')}.docx"
-    log_action(g.user.id, "export_batch", f"批量导出 {len(apps)} 份申请表")
     return send_file(
         buf,
         as_attachment=True,
@@ -311,11 +336,114 @@ def attachment(app_id):
     return send_file(abs_path, as_attachment=True, download_name=download)
 
 
+def _dt_text(dt):
+    """时间格式化成前端直接展示的字符串。"""
+    return dt.strftime("%Y-%m-%d %H:%M:%S") if dt else None
+
+
+@bp.route("/todos", methods=["GET"])
+@login_required
+def todos():
+    """首页「待办任务」清单（统一接口，按角色返回）。
+
+    学生：待取件 + 待反馈的逐条清单（已完成的申请，还差动作）；
+    管理员：汇总待办（待审批申请 / 待回复留言 / 待审核反馈），前端点击进入对应管理页。
+    """
+    # —— 管理员：汇总待办 ——
+    if g.user.role in ("admin", "superadmin"):
+        pending = PrintApplication.query.filter_by(status="pending").count()
+        approved = PrintApplication.query.filter_by(status="approved").count()
+        feedback = PrintApplication.query.filter(
+            PrintApplication.feedback_url.isnot(None),
+            PrintApplication.feedback_reviewed == 0,
+        ).count()
+        chat = ChatMessage.query.filter_by(sender_role="user", is_read=False).count()
+        items = [
+            {"kind": "approve", "label": "待审批申请", "count": pending,
+             "link": "/admin/pending", "cat": "pending"},
+            {"kind": "print", "label": "待打印", "count": approved,
+             "link": "/admin/pending", "cat": "approved"},
+            {"kind": "chat", "label": "待回复留言", "count": chat, "link": "/admin/chat"},
+            {"kind": "feedback_review", "label": "待审核反馈", "count": feedback,
+             "link": "/admin/pending", "cat": "fedback"},
+        ]
+        return ok({
+            "count": sum(i["count"] for i in items),
+            "items": items,
+        })
+
+    # —— 学生：待取件 + 待反馈 ——
+    expire_stale_silently()
+    rows = (
+        db.session.query(PrintApplication)
+        .filter(
+            PrintApplication.user_id == g.user.id,
+            PrintApplication.status == "completed",
+        )
+        .order_by(PrintApplication.completed_at.asc(), PrintApplication.id.asc())
+        .all()
+    )
+
+    pickups, feedbacks = [], []
+    for r in rows:
+        base = {
+            "id": r.id,
+            "apply_no": r.apply_no,
+            "file_name": r.file_name,
+            "completed_at": _dt_text(r.completed_at),
+            "feedback_deadline": _dt_text(r.feedback_deadline()),
+            "expired": r.expired_at is not None,
+            "status": r.status,
+        }
+        if not r.picked_up:
+            pickups.append({**base, "kind": "pickup"})
+        if not r.feedback_url and r.expired_at is None:
+            feedbacks.append({**base, "kind": "feedback"})
+
+    items = pickups + feedbacks
+    return ok({
+        "count": len(items),
+        "pickup_count": len(pickups),
+        "feedback_count": len(feedbacks),
+        "items": items,
+    })
+
+
+@bp.route("/pickup/<int:app_id>", methods=["POST"])
+@login_required
+def mark_picked_up(app_id):
+    """学生自助标记「已领取」。
+
+    置 picked_up / pick_up_date 后，首页「待取件」与取件提醒弹窗都会自然消失
+    （弹窗数据本身就是按「已完成且未领取」筛的）。
+    """
+    app_obj = db.session.get(PrintApplication, app_id)
+    if app_obj is None:
+        return fail("申请不存在", code=404, http_status=404)
+    if app_obj.user_id != g.user.id:
+        return fail("无权操作该申请", code=403, http_status=403)
+    if app_obj.status != "completed":
+        return fail("仅已完成的申请可以标记领取", code=1002)
+    if app_obj.picked_up:
+        return ok(app_obj.to_dict(), msg="该申请已是已领取状态")
+
+    app_obj.picked_up = True
+    app_obj.pick_up_date = datetime.now()
+    log_action(g.user.id, "pick_up", f"标记已领取 {app_obj.apply_no}")
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        return fail("操作失败，请重试", code=500, http_status=500)
+    return ok(app_obj.to_dict(), msg="已标记为已领取")
+
+
 @bp.route("/feedback/<int:app_id>", methods=["POST"])
 @login_required
 def feedback(app_id):
     """打印完成后提交反馈（上传实物图/现场照片），成功后奖励 1 次打印机会。"""
     user = g.user
+    expire_stale_silently()  # 先判过期，避免超期申请还能上传反馈领奖励
     app_obj = db.session.get(PrintApplication, app_id)
     if app_obj is None:
         return fail("申请不存在", code=404, http_status=404)
@@ -323,6 +451,9 @@ def feedback(app_id):
         return fail("无权操作该申请", code=403, http_status=403)
     if app_obj.status != "completed":
         return fail("仅已完成的订单可提交反馈", code=1002)
+    if app_obj.expired_at is not None:
+        return fail(f"该申请反馈已超期（打印完成超过 {feedback_expire_days()} 天未反馈），无法再提交",
+                    code=1002)
     if app_obj.feedback_url:
         return fail("该订单已反馈，不可重复提交", code=1002)
 
@@ -333,6 +464,10 @@ def feedback(app_id):
 
     app_obj.feedback_url = feedback_url
     app_obj.feedback_at = datetime.now()
+    # 上传反馈即视为已取件（学生在工作室现场拍摄上传），待取件待办自动消失
+    if not app_obj.picked_up:
+        app_obj.picked_up = True
+        app_obj.pick_up_date = datetime.now()
 
     # 奖励模式由 FEEDBACK_REWARD_MODE 决定：auto=自动+1；review=管理员审核后 +1
     if current_app.config.get("FEEDBACK_REWARD_MODE") == "review":

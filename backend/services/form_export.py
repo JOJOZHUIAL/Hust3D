@@ -9,6 +9,8 @@
 """
 import io
 import os
+import re
+import zipfile
 
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -247,14 +249,31 @@ def generate_application_docx(app_obj, upload_dir):
     return buf
 
 
-def generate_batch_docx(applications, upload_dir):
-    """批量导出：多份申请表合并为一个 docx（每份一页，分页符隔开）。"""
-    doc = _new_form_doc()
-    for i, app_obj in enumerate(applications):
-        if i:
-            doc.add_page_break()
-        _build_application(doc, app_obj, upload_dir)
+def _safe_name(text):
+    """去掉文件名非法字符。"""
+    return re.sub(r'[\\/:*?"<>|]', "", str(text or "")).strip()
+
+
+def application_docx_name(app_obj):
+    """导出的单个文件名：姓名 + 申请编号 + .docx（如 张三HUST3D20261017001.docx）。"""
+    owner = app_obj.user.name if app_obj.user else ""
+    return f"{_safe_name(owner)}{_safe_name(app_obj.apply_no)}.docx"
+
+
+def build_applications_zip(applications, upload_dir):
+    """批量导出：把每份申请生成为一个独立 Word，打包成 ZIP，返回 BytesIO。
+
+    注意：不是一个文档里塞多份申请 —— 解压后就是 N 个「姓名+申请编号.docx」。
+    """
     buf = io.BytesIO()
-    doc.save(buf)
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for app_obj in applications:
+            doc = _new_form_doc()
+            _build_application(doc, app_obj, upload_dir)
+            doc_buf = io.BytesIO()
+            doc.save(doc_buf)
+            zf.writestr(application_docx_name(app_obj), doc_buf.getvalue())
+            doc_buf.close()
     buf.seek(0)
     return buf
+

@@ -21,6 +21,10 @@
         <div class="msg-row" :class="{ mine: isMine(m) }">
           <div class="avatar">{{ avatarText(m) }}</div>
           <div class="bubble" :class="'type-' + m.content_type">
+            <!-- 已读/未读：只在自己发出的消息上显示 -->
+            <span v-if="isMine(m)" class="read-tag" :class="{ read: m.is_read }">
+              {{ m.is_read ? '已读' : '未读' }}
+            </span>
             <!-- 文字/表情 -->
             <template v-if="m.content_type === 'text'">
               <div class="txt">{{ m.content }}</div>
@@ -590,6 +594,16 @@ onUnmounted(() => {
 .bubble .txt {
   white-space: pre-wrap;
   line-height: 1.5;
+}
+.read-tag {
+  display: block;
+  text-align: right;
+  font-size: 10px;
+  line-height: 1.4;
+  color: #ffb300; /* 未读：橙色 */
+}
+.read-tag.read {
+  color: #d8d8d8; /* 已读：灰色 */
 }
 .pic {
   display: block;

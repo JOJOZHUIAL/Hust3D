@@ -6,12 +6,13 @@
 
 <script setup>
 import { onMounted, onUnmounted } from 'vue'
-import { showNotify } from 'vant'
+import { showNotify, showConfirmDialog } from 'vant'
 import { useAuthStore } from './store/auth'
 import { getUserInfo } from './api/user'
 import { getNotificationUnread, getNotificationList } from './api/notification'
+import { getLatestAppRelease } from './api/app'
 import { setUnread, unreadCount } from './store/notification'
-import { isNative } from './utils/server'
+import { isNative, getServerBase, assetUrl } from './utils/server'
 
 const auth = useAuthStore()
 let timer = null
@@ -43,6 +44,8 @@ onMounted(async () => {
       const p = await LocalNotifications.checkPermissions()
       if (p.display !== 'granted') await LocalNotifications.requestPermissions()
     }).catch(() => {})
+    // 检查 App 是否有新版本（管理员在后台上传 APK 后提示更新）
+    checkAppUpdate()
   }
   pollUnread()
   // 全局轮询未读通知：横幅提醒 + 角标数字（页面隐藏时跳过）
@@ -50,6 +53,51 @@ onMounted(async () => {
 })
 
 onUnmounted(() => clearInterval(timer))
+
+// 把后端返回的纯文本更新说明转义后换行，避免管理员填写的内容当成 HTML 执行
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ))
+}
+
+// 检查 App 新版本：仅在 App（非浏览器）内有意义
+async function checkAppUpdate() {
+  if (!isNative() || !getServerBase()) return
+  try {
+    const latest = await getLatestAppRelease()
+    if (!latest || !latest.version_code) return
+
+    const { App: CapApp } = await import('@capacitor/app')
+    const info = await CapApp.getInfo() // { version: 版本名, build: versionCode }
+    const current = Number(info?.build || 0)
+    if (Number(latest.version_code) <= current) return
+
+    const noteHtml = escapeHtml(
+      latest.note || '有新的版本可用，建议更新到最新版本。',
+    ).replace(/\n/g, '<br>')
+    const sizeHtml = latest.size_text
+      ? `<br><br><span style="color:#969799;font-size:12px">安装包 ${latest.size_text}</span>`
+      : ''
+
+    try {
+      await showConfirmDialog({
+        title: `发现新版本 ${latest.version_name || latest.version_code}`,
+        message: noteHtml + sizeHtml,
+        allowHtml: true,
+        confirmButtonText: '立即更新',
+        cancelButtonText: '稍后',
+      })
+    } catch (e) {
+      return // 选了「稍后」
+    }
+
+    // 交给系统浏览器下载 APK（Capacitor 对非同源地址会用系统打开）
+    window.location.href = assetUrl(latest.file_url)
+  } catch (e) {
+    /* 检查更新失败不影响使用 */
+  }
+}
 
 async function pollUnread() {
   if (!auth.isLogin || document.hidden) return

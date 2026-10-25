@@ -50,7 +50,9 @@
       </van-cell-group>
     </div>
     <p class="hint">
-      只有登录过本系统的学号才能被设为管理员；超级管理员由服务器配置文件指定，不可在此修改。
+      只有登录过本系统的学号才能被设为管理员；<b>添加/移除管理员时会把学号同步写入服务器配置文件的
+      ADMIN_STUDENT_IDS</b>，重启后依然有效。超级管理员由配置文件里的 SUPER_ADMIN_STUDENT_IDS 指定，
+      不可在此修改。
     </p>
   </div>
 </template>
@@ -96,7 +98,7 @@ function onSearch(v) {
 async function onPromote(u) {
   try {
     await setUserRole({ student_id: u.student_id, role: 'admin' })
-    showSuccessToast(`已将 ${u.name || u.student_id} 设为管理员`)
+    showSuccessToast(`已设为管理员，学号已写入配置文件`)
     hits.value = []
     keyword.value = ''
     load()
@@ -109,14 +111,14 @@ async function onDemote(u) {
   try {
     await showConfirmDialog({
       title: '移除管理员',
-      message: `确定移除 ${u.name || u.student_id} 的管理员权限吗？`,
+      message: `确定移除 ${u.name || u.student_id} 的管理员权限吗？\n同时会把该学号从服务器配置文件 ADMIN_STUDENT_IDS 中移除。`,
     })
   } catch (e) {
     return
   }
   try {
     await setUserRole({ student_id: u.student_id, role: 'user' })
-    showSuccessToast('已移除')
+    showSuccessToast('已移除，配置文件中已同步移除')
     load()
   } catch (e) {
     /* 拦截器已提示 */

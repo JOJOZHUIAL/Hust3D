@@ -1,11 +1,14 @@
 // 状态 -> 展示文案与标签颜色（颜色用 Vant Tag 的 color 值）
+// 注意：过期不是独立状态 —— 状态仍是 completed，另外用「已过期」标签标注
 export const STATUS = {
   pending: { text: '待审批', color: '#ff976a' },
   approved: { text: '已通过', color: '#07c160' },
   rejected: { text: '已拒绝', color: '#ee0a24' },
   printing: { text: '打印中', color: '#1989fa' },
   completed: { text: '已完成', color: '#7232dd' },
+  expired: { text: '已完成', color: '#7232dd' }, // 历史数据兜底
   cancelled: { text: '已取消', color: '#969799' },
+  failed: { text: '打印失败', color: '#ee0a24' },
 }
 
 // 打印用途选项（与后端 ALLOWED_PURPOSE 一致）

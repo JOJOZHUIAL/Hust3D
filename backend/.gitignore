@@ -13,6 +13,8 @@ uploads/
 
 # 冒烟测试产生的本地 SQLite 文件
 *.db
+# 冒烟测试用的临时 .env（脚本结束会自动删除）
+smoke.env
 
 # 编辑器
 .vscode/

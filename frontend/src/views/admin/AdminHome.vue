@@ -47,6 +47,18 @@
         <div class="hub-name">耗材管理</div>
         <div class="hub-desc">扫码登记耗材入库与拆封</div>
       </div>
+
+      <div class="hub-item" @click="$router.push('/admin/app-update')">
+        <div class="hub-icon" style="--c: #1989fa"><van-icon name="upgrade" /></div>
+        <div class="hub-name">应用更新</div>
+        <div class="hub-desc">上传新版 APK，App 提示更新</div>
+      </div>
+
+      <div class="hub-item" @click="$router.push('/admin/sms')">
+        <div class="hub-icon" style="--c: #07c160"><van-icon name="chat-o" /></div>
+        <div class="hub-name">短信通知</div>
+        <div class="hub-desc">查看发送记录，自定义发短信</div>
+      </div>
     </div>
 
     <TabBar />

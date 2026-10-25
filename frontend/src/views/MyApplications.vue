@@ -28,33 +28,44 @@
       </button>
     </div>
 
-    <!-- 批量导出条 -->
-    <div v-if="dateFiltered.length" class="batch-bar">
-      <span class="batch-info">当前筛选 {{ dateFiltered.length }} 份</span>
-      <van-button size="small" type="primary" icon="description" round :loading="exporting" @click="onBatchExport">
-        批量导出 Word
-      </van-button>
-    </div>
-
     <div class="list-body">
       <van-empty v-if="!loading && dateFiltered.length === 0" description="暂无申请记录" />
-      <van-cell-group v-else inset>
+      <!-- 每条申请一张圆角卡片 -->
+      <div v-else class="app-list">
         <van-cell
           v-for="item in dateFiltered"
           :key="item.id"
+          class="app-card"
           :title="item.apply_no"
           :label="`${PURPOSE_TEXT[item.purpose] || item.purpose} · ${item.created_at}`"
           is-link
           @click="$router.push(`/application/${item.id}`)"
         >
           <template #value>
-            <van-tag :color="STATUS[item.status]?.color">{{ STATUS[item.status]?.text }}</van-tag>
-            <van-tag v-if="item.feedback_url && item.feedback_reviewed === false" color="#ffd21e">反馈审核中</van-tag>
-            <van-tag v-else-if="item.feedback_url && item.feedback_reviewed !== 2" color="#07c160">已反馈</van-tag>
-            <van-tag v-else-if="item.status === 'completed'" color="#ff976a">未反馈</van-tag>
+            <van-tag round :color="STATUS[item.status]?.color">{{ STATUS[item.status]?.text }}</van-tag>
+            <van-tag round v-if="item.feedback_url && item.feedback_reviewed === false" color="#ffd21e">反馈审核中</van-tag>
+            <van-tag round v-else-if="item.feedback_url && item.feedback_reviewed !== 2" color="#07c160">已反馈</van-tag>
+            <van-tag round v-else-if="item.expired" color="#969799">已过期</van-tag>
+            <van-tag round v-else-if="item.status === 'completed'" color="#ff976a">未反馈</van-tag>
+          </template>
+          <template #right-icon>
+            <!-- 待审批且未进入审批流程：可撤回（彻底删除并返还打印次数） -->
+            <van-button
+              v-if="item.can_withdraw"
+              size="mini"
+              plain
+              round
+              type="danger"
+              style="margin-right: 6px"
+              @click.stop="onWithdraw(item)"
+            >
+              撤回
+            </van-button>
+            <!-- 自定义 right-icon 会覆盖默认箭头，这里补回来保持列表观感一致 -->
+            <van-icon name="arrow" class="van-cell__right-icon" />
           </template>
         </van-cell>
-      </van-cell-group>
+      </div>
     </div>
 
     <TabBar />
@@ -74,8 +85,8 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { getMyApplications, exportBatchApplication } from '../api/application'
-import { downloadBlob } from '../api/application'
+import { showConfirmDialog, showSuccessToast } from 'vant'
+import { getMyApplications, withdrawApplication } from '../api/application'
 import TabBar from '../components/TabBar.vue'
 import { STATUS, PURPOSE_TEXT } from '../utils/constants'
 
@@ -85,6 +96,7 @@ const TABS = [
   { value: 'approved', label: '已通过' },
   { value: 'printing', label: '打印中' },
   { value: 'completed', label: '已完成' },
+  { value: 'expired', label: '已过期' },
   { value: 'rejected', label: '已拒绝' },
   { value: 'cancelled', label: '已取消' },
 ]
@@ -159,26 +171,7 @@ const dateFiltered = computed(() => {
   return arr
 })
 
-// —— 批量导出 Word（合并为一份文档，每份申请一页） ——
-const exporting = ref(false)
-
-async function onBatchExport() {
-  if (!dateFiltered.value.length) return
-  exporting.value = true
-  try {
-    const ids = dateFiltered.value.map((x) => x.id).join(',')
-    const res = await exportBatchApplication(ids)
-    const blob = new Blob([res.data], {
-      type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    })
-    const label = dateMode.value === 'all' ? '全部' : customLabel.value.replace('📅 ', '')
-    downloadBlob(blob, `申请表_${label}_${dateFiltered.value.length}份.docx`)
-  } catch (e) {
-    /* 拦截器已提示 */
-  } finally {
-    exporting.value = false
-  }
-}
+// —— 批量导出 Word 已移到管理员「审批管理」右上角（按时间范围导出）——
 
 async function load() {
   loading.value = true
@@ -192,6 +185,25 @@ async function load() {
   }
 }
 
+// 撤回申请：等价于删除（记录 + STL/签名文件），并返还 1 次打印机会
+async function onWithdraw(item) {
+  try {
+    await showConfirmDialog({
+      title: '撤回申请',
+      message: `确定撤回申请 ${item.apply_no} 吗？\n撤回后记录与模型文件将被永久删除，且不消耗打印次数。`,
+    })
+  } catch (e) {
+    return // 取消
+  }
+  try {
+    await withdrawApplication(item.id)
+    showSuccessToast('已撤回，打印次数已返还')
+    load()
+  } catch (e) {
+    /* 拦截器已提示 */
+  }
+}
+
 function onTabChange() {
   load()
 }
@@ -202,6 +214,55 @@ onMounted(load)
 <style scoped>
 .list-body {
   padding-top: 8px;
+}
+
+/* 申请列表：每条一张圆角卡片 */
+.app-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 16px 12px;
+}
+.app-card {
+  border-radius: 14px;
+  background: #fff;
+  overflow: hidden;
+  box-shadow: 0 4px 14px rgba(20, 46, 104, 0.06);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.app-card:active {
+  transform: scale(0.99);
+  box-shadow: 0 2px 8px rgba(20, 46, 104, 0.1);
+}
+/* 卡片自带圆角，去掉 cell 默认的分割线 */
+.app-card::after {
+  display: none;
+}
+.app-card :deep(.van-cell__title) {
+  font-weight: 600;
+  color: #1a2233;
+}
+.app-card :deep(.van-cell__label) {
+  margin-top: 4px;
+  color: #969799;
+}
+/* 右侧状态标签：圆润药丸样式，两枚标签之间留一点间距 */
+.app-card :deep(.van-cell__value) {
+  text-align: right;
+}
+.app-card :deep(.van-tag) {
+  margin-left: 6px;
+  padding: 3px 12px;
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 500;
+  border-radius: 999px;
+}
+
+@media (min-width: 768px) {
+  .app-list {
+    padding: 6px 36px 16px;
+  }
 }
 .date-filter {
   display: flex;
@@ -222,19 +283,5 @@ onMounted(load)
   background: #2f6bff;
   border-color: #2f6bff;
   color: #fff;
-}
-.batch-bar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin: 10px 16px 0;
-  padding: 8px 12px;
-  border-radius: 8px;
-  background: #f2f6ff;
-}
-.batch-info {
-  font-size: 13px;
-  color: #2f6bff;
-  font-weight: 600;
 }
 </style>
