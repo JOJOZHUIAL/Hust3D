@@ -197,7 +197,201 @@
 > ⚠️ 重要：**当前手机上已安装的旧 APK 里没有这段检查代码**，所以需要先手动装一次包含本功能的
 > 版本（versionCode ≥ 2）；从这以后就能靠弹窗提示更新了。
 
-## 取件短信通知（SmsForwarder）
+## 公共管理员账号（工作室共用）
+
+工作室的电脑上大家共用一个登录账号，但操作记录必须能追溯到具体的人。
+
+| 项 | 说明 |
+| --- | --- |
+| 账号 / 密码 | `admin` / `hust3d123456`（`.env` 的 `PUBLIC_ADMIN_USERNAME` / `PUBLIC_ADMIN_PASSWORD` 可改） |
+| 权限 | 与普通管理员**完全一致**（不能管理管理员，那是超管权限） |
+| 登录 | 登录页直接把学号填 `admin`，密码填上面的密码，**不需要教务系统验证码** |
+| 操作人登记 | 审批申请、审核反馈、开始打印、拆封耗材时，**必须填写实际操作人学号**；系统按学号找到对应账号，把这次操作记到本人名下（审批人 / 打印人 / 拆封人），操作日志里也会带「公共账号操作，操作人：XXX」 |
+| 学号要求 | 该学号必须已经登录过一次系统（否则没有账号）；找不到会提示「请让对方先登录一次系统」 |
+
+> 普通管理员 / 超管账号不受影响，直接以自己的身份记录，不会弹操作人输入框。
+
+## 反馈规则
+
+| 规则 | 说明 |
+| --- | --- |
+| 谁能反馈 | **所有已完成**的申请都能上传反馈图，**已过期也可以补交** |
+| 过期补交 | **仍然需要管理员审核**（会进入待审核队列），审核通过也**不发放奖励** |
+| 是否奖励 | 每单**只发一次**（`feedback_rewarded` 保证）；过期补交一律 0 次 |
+| 多张图片 | 一次可选多张（最多 9 张/次），存在 `application_feedback_images` 表；`feedback_url` 只存第一张作封面 |
+| 追加/重传 | 不满意可以再次上传，**图片累加不覆盖**，也不会重复加打印次数 |
+| 管理员拒绝 | 拒绝会清空该单的所有反馈图，回到「未反馈」状态，学生可重新上传 |
+| 预计反馈时间 | 申请表单可选填「计划何时交反馈」，同时提示「打印完成后 N 天内为正常反馈期」 |
+| 过期判定 | `FEEDBACK_EXPIRE_DAYS`（默认 7，0=关闭）。**改这个值重启后会自动重算历史数据**：放宽会撤销过期标记，收紧会补标 |
+
+## 消息通知（短信 + 邮件，一个板块）
+
+原来的「短信通知」「短信网关」两个入口已合并为 **管理后台 → 消息通知**（`/admin/notify`）。
+界面是主平台自己的 Vue3 页面：**右侧竖排菜单（收件/发送/状态/设置），内容显示在左侧**。
+
+### 1. 后端分层
+
+| 层 | 文件 | 说明 |
+| --- | --- | --- |
+| 硬件通信 | `backend/vendor/sms_hub/core/`（原样，MIT） | ESP32 心跳 `/hook`、收发队列、SIM 管理 |
+| 数据读取 | `backend/services/native_sms.py` | **直接 SELECT** `sms.db` 的 messages/outbound/devices/sims/contacts |
+| 发送 | 同上 → `sms_hub.send_text()` | 进程内 `enqueue_sms`，零 HTTP |
+| 接口 | `backend/blueprints/native_sms.py` | 6 个端点，管理员鉴权 |
+| 界面 | `frontend/src/views/admin/AdminNotify.vue` | Vue3 + Vant 原生页面 |
+
+### 2. 六个接口
+
+```
+GET  /api/admin/native-sms/status     设备在线 / 信号 / 号码 / 自动识别的卡 / 两个开关
+GET  /api/admin/native-sms/messages   收件箱（?keyword= 搜联系人/内容/备注）
+GET  /api/admin/native-sms/outbound   发送记录
+POST /api/admin/native-sms/send       发送短信
+GET  /api/admin/native-sms/settings   自动短信 / 自动邮件开关
+PUT  /api/admin/native-sms/settings   保存开关
+```
+
+### 3. 状态页（设备全量信息 + 固件日志）
+
+「状态」标签页展示设备自报的全部信息，并支持直接拉固件日志：
+
+| 区块 | 内容 |
+| --- | --- |
+| 状态卡 | 在线/离线、信号格、SIM 号码、最后见到时间 |
+| 自动识别到的卡 | 每张卡的号码、运营商、在用/未接入 |
+| 设备与网络 | MAC、IP、固件版本、模组型号、注册状态、信号 dBm、运营商、IMSI/ICCID 尾号、数据连接、WiFi SSID+信号、运行时长、可用内存、复位原因 |
+| 同步与收发 | 本地已收/已发、设备 rx/tx、游标、设备缓冲占用、上次拉取、上次上报 |
+| 固件日志 | 增量拉取设备日志（含 `[webhook] 连接失败` 这类历史误报可以直接看到），带「强制拉取」按钮 |
+
+后端接口：`GET /native-sms/log?since=`、`POST /native-sms/pull`
+（都是通过内嵌 DeviceManager 的 `rt.fetch_log()` / `poller.poll_device()` 调内核，不走 HTTP 中转）。
+
+### 4. 自动识别卡（不再手动加网关）
+
+插在设备上的卡由固件上报，平台读 `sims` 表就能列出来：
+
+- `current_device_mac` = 在线设备 → 标记 **在用**（绿）
+- 其它 启用卡 → 标记 **未接入**
+- 号码优先取 `sims.msisdn`（`+8613362648430` → `133 6264 8430`），没有就用模组上报的号码
+- 运营商代码中文化（CHINA MOBILE → 中国移动）
+
+**没有任何「添加网关 / 通知渠道」的入口了** —— 插卡即识别。
+
+### 5. 收件箱
+
+- 搜索框同时匹配 **发送人号码、发送人备注、正文**
+- 备注来源：`contacts.alias` 优先，其次主平台 `users.name`（按手机号关联，学生回复短信时能直接看到是谁）
+- 每行显示 备注/号码、时间、正文；有验证码时自动识别（4~8 位，优先 6 位、优先靠前）并提示「点我复制」
+
+### 6. 发送 + 发送记录
+
+发送框填手机号 + 内容（实时校验 `^1\d{10}$`），走内部函数入队；
+下方「发送记录」读 `outbound` 表：号码、状态（已发送/发送中/失败）、时间、正文、失败原因。
+
+### 7. 发送模板（短信 + 邮件）
+
+「设置」里可以直接编辑两种模板，保存写回 `.env` 并**立即生效**：
+
+| 配置项 | 内容 |
+| --- | --- |
+| `NOTIFY_SMS_TEMPLATE` | 取件短信正文 |
+| `NOTIFY_EMAIL_SUBJECT` | 邮件主题 |
+| `NOTIFY_EMAIL_TEMPLATE` | 邮件正文（可多行） |
+
+可用占位符：`{name}` `{apply_no}` `{file_name}` `{printer}` `{deadline}`
+
+默认邮件正文：
+
+```
+{name} 同学：
+
+你提交的申请（{apply_no}）已打印完成，请携带校园卡到创新创业协会工作室领取。
+
+领取后欢迎上传实物图反馈，成功可奖励 1 次打印机会。
+
+理工智造共享平台 · 大学生创新创业协会
+```
+
+> `.env` 是单行格式，所以多行正文在文件里存成字面量 `\n`，读取时还原成换行；
+> 页面上正常换行编辑即可，无需关心转义。
+
+### 8. 两个自动开关
+
+「设置」里只有两个开关，保存后写回 `.env` 并**立即生效**：
+
+| 开关 | 配置项 | 作用 |
+| --- | --- | --- |
+| 自动短信 | `NOTIFY_AUTO_SMS` | 打印完成时自动给申请人发取件短信 |
+| 自动邮件 | `NOTIFY_AUTO_EMAIL` | 打印完成时自动发邮件（SMTP 配好才生效） |
+
+> 邮件开关默认在 `.env` 里设成 `0`（之前退信较多），需要时在页面打开即可。
+
+## 邮件通知与防退信
+
+打印完成 / 审核结果 / 打印失败等事件会发邮件（`.env` 里配 `SMTP_*`）。之前退信爆炸的三个原因
+和对应修复：
+
+| 问题 | 修复 |
+| --- | --- |
+| 收件人是 `student@example.com` 这类占位地址（No MX Record Found） | `mailer.is_deliverable_address()` 直接跳过占位/内网域名（example.com、test.local、*.local 等） |
+| 域名拼错或不存在，发出去必然退信 | 域名 MX/解析预检（带 6 小时缓存），查不到就不发 |
+| 同一个坏地址每次事件都重发 | 连续失败 3 次自动拉黑 24 小时（`MAIL_MAX_FAILS` / `MAIL_BLOCK_HOURS`） |
+| 退信里时间显示 `1970-01-01`（缺 Date 头，被判畸形邮件） | 补齐 `Date` / `Message-ID` / `MIME-Version` |
+| 一次事件群发太多封 | 全局限流 `MAIL_RATE_PER_MIN`（默认 20 封/分钟） |
+
+```ini
+MAIL_CHECK_MX=1          # 域名可收信预检
+MAIL_MAX_FAILS=3         # 连续失败几次拉黑
+MAIL_BLOCK_HOURS=24
+MAIL_RATE_PER_MIN=20
+```
+
+## 取件短信通知（sms-hub · ESP32C3 + 4G 模组）
+
+> 早期用手机上的 SmsForwarder 代发（见下方「历史方案」），现已换成自建硬件网关 **sms-hub**：
+> ESP32C3 + ML307R 4G 模组，局域网跑 FastAPI，`http://192.168.1.150:8025`。
+
+### 1. 协议（已按源码确认，不是 `/hook/*`）
+
+| 步骤 | 请求 |
+| --- | --- |
+| 取令牌 | `POST {base}/api/login` `{"user":"admin","password":"<WEBUI_PASS>"}` → `{"token":"..."}` |
+| 发短信 | `POST {base}/api/send`，Header `Authorization: Bearer <token>`，body `{"sim_id":"...","to":"13x...","text":"..."}` → `{"ok":true,"queued":true,"id":12,"parts":1}` |
+| 查记录 | `GET {base}/api/outbound?limit=20` |
+
+> ⚠️ `/hook/{DEVICE_TOKEN}` 是 **ESP32 固件上报**用的 webhook，不能用来发短信（会 400/404）。
+> `sim_id` 不传时 Hub 会自动推断；但如果有多张卡，必须显式指定 —— 我们的客户端会自动挑
+> 「已绑定在线设备」的那张卡。
+
+### 2. 配置
+
+```ini
+SMS_ENABLED=1
+SMS_PROVIDER=smshub
+SMSHUB_BASE_URL=http://192.168.1.150:8025
+SMSHUB_USER=admin
+SMSHUB_PASSWORD=hust3d123456     # = sms-hub 的 WEBUI_PASS
+SMSHUB_SIM_ID=                   # 留空自动挑卡
+SMSHUB_TIMEOUT=10
+SMSHUB_RETRIES=3                 # 网络抖动重试（1s/2s/4s 退避）
+```
+
+### 3. 业务调用
+
+打印完成（打印机 100% 自动完成 / 管理员点「标记完成」）→ `services/sms.py` 的
+`notify_pickup_sms()` 写入 `sms_messages` 队列 → 后台线程调 `services/sms_hub.py`。
+
+也可以直接调封装好的函数：
+
+```python
+from services.sms_hub import send_3d_print_notification
+
+send_3d_print_notification("15718160158", "机械臂底座.stl", "HUST3D20261026001")
+# 正文：您好，您的3D打印件（机械臂底座.stl）已打印完成，请取件。取件号：HUST3D20261026001。
+```
+
+失败会抛 `SmsHubError`；`retryable=True` 表示网络类问题（会自动重试 3 次）。
+
+## 历史方案：SmsForwarder（已停用）
 
 打印完成时（不管是打印机进度 100% 自动完成，还是管理员手动「标记完成」），服务器会自动给
 申请人填写的手机号发一条取件短信。服务器本身不发短信，而是把请求交给一台装了

@@ -57,6 +57,8 @@ class User(db.Model):
     phone = db.Column(db.String(32), nullable=True, comment="联系方式")
     email = db.Column(db.String(128), nullable=True, comment="邮箱")
     role = db.Column(db.String(16), nullable=False, default="user", comment="角色 admin/user")
+    is_shared_admin = db.Column(db.Boolean, nullable=False, default=False,
+                                comment="公共管理员共享账号：操作时需另行登记实际操作人")
     semester = db.Column(db.String(32), nullable=True, comment="当前学期，如 2026-1")
     remaining_quota = db.Column(db.Integer, nullable=False, default=2, comment="本学期剩余打印次数")
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.now)
@@ -73,6 +75,7 @@ class User(db.Model):
             "phone": self.phone,
             "email": self.email,
             "role": self.role,
+            "is_shared_admin": bool(self.is_shared_admin),
             "semester": self.semester,
             "remaining_quota": self.remaining_quota,
             "created_at": _fmt(self.created_at),
@@ -131,12 +134,23 @@ class PrintApplication(db.Model):
     pick_up_date = db.Column(db.DateTime, nullable=True)
     sign_url = db.Column(db.String(255), nullable=True, comment="申请人签名图片")
     reviewer_sign = db.Column(db.String(255), nullable=True, comment="审核人签名")
-    feedback_url = db.Column(db.String(255), nullable=True, comment="反馈图片路径（实物图/现场照片）")
+    feedback_url = db.Column(db.String(255), nullable=True, comment="反馈图片路径（第一张，作封面）")
     feedback_at = db.Column(db.DateTime, nullable=True, comment="反馈时间")
     feedback_reviewed = db.Column(db.Boolean, nullable=True, default=None,
-                                  comment="反馈审核：None=无需审核或已拒绝 0=待审核 1=通过")
+                                  comment="反馈审核：None=无需审核(auto模式)或已拒绝 0=待审核 1=通过")
+    feedback_rewarded = db.Column(db.Boolean, nullable=False, default=False,
+                                  comment="是否已发放反馈奖励（每单只发一次）")
+    expected_feedback_at = db.Column(db.DateTime, nullable=True,
+                                     comment="申请人自报的预计反馈时间")
+    expected_feedback_note = db.Column(db.String(255), nullable=True,
+                                       comment="不按默认期限时的原因说明")
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.now)
     updated_at = db.Column(db.DateTime, nullable=False, default=datetime.now, onupdate=datetime.now)
+
+    feedback_images = db.relationship(
+        "FeedbackImage", backref="application", lazy="select",
+        order_by="FeedbackImage.id", cascade="all, delete-orphan",
+    )
 
     def to_dict(self):
         d = {
@@ -175,11 +189,18 @@ class PrintApplication(db.Model):
             "feedback_url": self.feedback_url,
             "feedback_at": _fmt(self.feedback_at),
             "feedback_reviewed": self.feedback_reviewed,
+            "feedback_rewarded": bool(self.feedback_rewarded),
+            "feedback_images": [
+                {"id": img.id, "url": img.url, "created_at": _fmt(img.created_at)}
+                for img in (self.feedback_images or [])
+            ],
             "feedback_deadline": _fmt(self.feedback_deadline()),
             "feedback_expire_days": feedback_expire_days(),
+            "expected_feedback_at": _fmt(self.expected_feedback_at),
+            "expected_feedback_note": self.expected_feedback_note,
             "can_withdraw": self.status == "pending",
-            "can_feedback": (self.status == "completed" and not self.feedback_url
-                             and self.expired_at is None),
+            # 已完成的都能反馈：过期后也可补交，也能追加多张（奖励每单只发一次）
+            "can_feedback": self.status == "completed",
             "created_at": _fmt(self.created_at),
             "updated_at": _fmt(self.updated_at),
             "timeline": self.timeline(),
@@ -191,6 +212,7 @@ class PrintApplication(db.Model):
                 "student_id": self.user.student_id,
                 "college": self.user.college,
                 "phone": self.user.phone,
+                "email": self.user.email,
             }
         return d
 
@@ -422,6 +444,32 @@ class Printer(db.Model):
         }
 
 
+class EmailMessage(db.Model):
+    """邮件发送记录（管理端「消息通知 → 发送」的邮件通道）。"""
+
+    __tablename__ = "email_messages"
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    to_addr = db.Column(db.String(128), nullable=False, comment="收件邮箱")
+    subject = db.Column(db.String(255), nullable=False, comment="主题")
+    body = db.Column(db.Text, nullable=False, comment="正文")
+    status = db.Column(db.String(16), nullable=False, default="sent", index=True,
+                       comment="sent=已发送 / failed=失败")
+    error = db.Column(db.Text, nullable=True, comment="失败原因")
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.now)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "to": self.to_addr,
+            "subject": self.subject,
+            "body": self.body,
+            "status": self.status,
+            "error": self.error,
+            "created_at": _fmt(self.created_at),
+        }
+
+
 class Notification(db.Model):
     """站内通知：审批结果 / 新留言 / 新申请 / 耗材进出等事件的提醒，全员各自收各自的。"""
 
@@ -447,6 +495,27 @@ class Notification(db.Model):
             "body": self.body,
             "link": self.link,
             "is_read": self.is_read,
+            "created_at": _fmt(self.created_at),
+        }
+
+
+class FeedbackImage(db.Model):
+    """反馈图片（一单可多张，也可以事后追加 —— 学生不满意可重新上传）。"""
+
+    __tablename__ = "application_feedback_images"
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    application_id = db.Column(db.Integer, db.ForeignKey("print_applications.id"),
+                               nullable=False, index=True, comment="申请 id")
+    url = db.Column(db.String(255), nullable=False, comment="图片相对路径 uploads/feedback/..")
+    uploader_id = db.Column(db.Integer, nullable=True, comment="上传人 users.id")
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.now)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "application_id": self.application_id,
+            "url": self.url,
             "created_at": _fmt(self.created_at),
         }
 

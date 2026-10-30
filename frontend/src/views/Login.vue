@@ -31,17 +31,20 @@
           clearable
           autocomplete="off"
         />
+        <div v-if="isPublicAdmin" class="pub-admin-tip">
+          公共管理员账号登录：权限与管理员相同，审批 / 开始打印 / 拆封耗材时会要求填写实际操作人学号。
+        </div>
         <van-field
           v-model="password"
           type="password"
           name="password"
           label="密码"
-          placeholder="请输入教务系统密码"
+          :placeholder="isPublicAdmin ? '请输入公共管理员密码' : '请输入教务系统密码'"
           clearable
           @keyup.enter="onSubmit"
         />
         <van-field
-          v-if="captchaRequired"
+          v-if="captchaRequired && !isPublicAdmin"
           v-model="captchaCode"
           name="captcha"
           label="验证码"
@@ -82,10 +85,10 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { showSuccessToast, showFailToast } from 'vant'
-import { casLogin, getCaptcha } from '../api/auth'
+import { casLogin, getCaptcha, getLoginMode } from '../api/auth'
 import { useAuthStore } from '../store/auth'
 import clubLogo from '../assets/login/club-logo.jpg'
 import hustRound from '../assets/login/hust-round.png'
@@ -98,6 +101,10 @@ document.documentElement.style.setProperty('--login-bg', `url(${campusImg})`)
 const router = useRouter()
 const auth = useAuthStore()
 const studentId = ref('')
+const publicAdminName = ref('admin')
+const isPublicAdmin = computed(
+  () => !!publicAdminName.value && studentId.value.trim() === publicAdminName.value
+)
 const password = ref('')
 const loading = ref(false)
 
@@ -169,7 +176,7 @@ async function onSubmit() {
     showFailToast('请输入密码')
     return
   }
-  if (captchaRequired.value && !captchaCode.value.trim()) {
+  if (!isPublicAdmin.value && captchaRequired.value && !captchaCode.value.trim()) {
     if (captchaState.value !== 'ok') {
       showFailToast('验证码未加载，正在自动重新获取…')
       refreshCaptcha()
@@ -186,7 +193,7 @@ async function onSubmit() {
       student_id: studentId.value.trim(),
       password: password.value,
     }
-    if (captchaRequired.value) {
+    if (captchaRequired.value && !isPublicAdmin.value) {
       payload.captcha_id = captchaId.value
       payload.captcha_code = captchaCode.value.trim()
     }

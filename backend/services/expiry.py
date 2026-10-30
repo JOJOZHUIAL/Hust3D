@@ -1,12 +1,16 @@
 # -*- coding: utf-8 -*-
 """反馈超时过期处理。
 
-规则：申请被标记「打印完成」后 FEEDBACK_EXPIRE_DAYS 天（默认 7 天）内没有提交反馈，
-就标记为**已过期** —— 注意状态仍然是「已完成」，只是多记一个 `expired_at` 时间：
-此后不能再上传反馈、也不再发放反馈奖励，列表/详情上会显示「已过期」标记。
+规则：申请被标记「打印完成」后 FEEDBACK_EXPIRE_DAYS 天（默认 7 天，可在 .env 调整）
+内没有提交反馈，就标记为**已过期** —— 状态仍然是「已完成」，只是多记一个
+`expired_at` 时间；列表/详情上会显示「已过期」标记，补交反馈需要管理员审核且不发奖励。
 
 实现说明：项目未引入定时任务依赖，这里采用「读取时惰性扫描 + 落库」的方式，
 在列表 / 详情 / 反馈等入口调用，保证任何时刻用户看到的状态都与规则一致。
+
+**双向校准**：改完 .env 的 FEEDBACK_EXPIRE_DAYS 重启后，之前被标记过期的记录会按新
+天数重新判定 —— 期限变长（或关闭过期）时会把不该过期的记录恢复成未过期，
+期限变短时会把新超期的记录补标上，不需要手动改数据库。
 """
 from datetime import datetime, timedelta
 
@@ -17,11 +21,19 @@ from extensions import db
 from models import PrintApplication, feedback_expire_days
 
 
-def expire_stale_applications():
-    """把超期未反馈的「已完成」申请标记为已过期，返回本次新过期的条数。
+def _base_expr():
+    """计时基准：completed_at → printed_at → updated_at。"""
+    return func.coalesce(
+        PrintApplication.completed_at,
+        PrintApplication.printed_at,
+        PrintApplication.updated_at,
+    )
 
-    只写 `expired_at`，不动 `status`（保持 completed）；计时基准与
-    models.feedback_deadline() 保持一致：completed_at → printed_at → updated_at。
+
+def expire_stale_applications():
+    """按当前配置刷新过期标记（双向），返回本次变更的条数。
+
+    只写 `expired_at`，不动 `status`（保持 completed）。
     """
     now = datetime.now()
     changed = 0
@@ -39,26 +51,52 @@ def expire_stale_applications():
         changed += 1
 
     days = feedback_expire_days()
-    if days > 0:  # 0/负数表示关闭过期机制
-        cutoff = now - timedelta(days=days)
-        base = func.coalesce(
-            PrintApplication.completed_at,
-            PrintApplication.printed_at,
-            PrintApplication.updated_at,
-        )
+
+    if days <= 0:
+        # 关闭过期机制：把之前标记过的一律恢复
         rows = (
             db.session.query(PrintApplication)
-            .filter(
-                PrintApplication.status == "completed",
-                PrintApplication.feedback_url.is_(None),
-                PrintApplication.expired_at.is_(None),
-                base <= cutoff,
-            )
+            .filter(PrintApplication.expired_at.isnot(None))
             .all()
         )
         for r in rows:
-            r.expired_at = now
+            r.expired_at = None
             changed += 1
+        if changed:
+            db.session.commit()
+        return changed
+
+    cutoff = now - timedelta(days=days)
+    base = _base_expr()
+
+    # ① 该过期但还没标记的
+    stale = (
+        db.session.query(PrintApplication)
+        .filter(
+            PrintApplication.status == "completed",
+            PrintApplication.feedback_url.is_(None),
+            PrintApplication.expired_at.is_(None),
+            base <= cutoff,
+        )
+        .all()
+    )
+    for r in stale:
+        r.expired_at = now
+        changed += 1
+
+    # ② 不该过期却已被标记的（改小了天数 / 之前误标的）→ 恢复
+    revived = (
+        db.session.query(PrintApplication)
+        .filter(
+            PrintApplication.status == "completed",
+            PrintApplication.expired_at.isnot(None),
+            base > cutoff,
+        )
+        .all()
+    )
+    for r in revived:
+        r.expired_at = None
+        changed += 1
 
     if changed:
         db.session.commit()

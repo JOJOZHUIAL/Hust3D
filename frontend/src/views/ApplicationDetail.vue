@@ -38,6 +38,15 @@
         />
         <van-cell title="期望材料" :value="detail.material" />
         <van-cell title="模型数量" :value="String(detail.model_count)" />
+        <van-cell
+          title="预计反馈时间"
+          :value="detail.expected_feedback_at || '按默认期限'"
+        />
+        <van-cell
+          v-if="detail.expected_feedback_note"
+          title="情况说明"
+          :value="detail.expected_feedback_note"
+        />
       </van-cell-group>
 
       <!-- 模型与说明 -->
@@ -140,6 +149,30 @@
         </van-cell>
       </van-cell-group>
 
+      <!-- 反馈提醒（仅管理员，未反馈/已过期时可见） -->
+      <van-cell-group
+        v-if="isAdmin && detail.status === 'completed' && !detail.feedback_url"
+        inset
+        title="反馈提醒"
+      >
+        <van-cell title="适用情况" :value="detail.expired ? '已过期' : '未反馈'" />
+        <van-cell>
+          <div class="sms-btns">
+            <van-button
+              size="small"
+              type="warning"
+              round
+              icon="chat-o"
+              :loading="remindSending"
+              @click="onRemindFeedback"
+            >
+              短信提醒学生提交反馈
+            </van-button>
+          </div>
+        </van-cell>
+        <van-cell title="提醒内容" label="【3D打印服务】{name}同学，你申请的打印件（{apply_no}）已完成 N 天还未收到反馈，请尽快登录平台上传实物照片反馈，奖励 1 次打印机会。" />
+      </van-cell-group>
+
       <!-- 进度时间线 -->
       <div class="section-title">进度时间线</div>
       <div class="timeline-box">
@@ -187,36 +220,55 @@
         />
       </div>
 
-      <!-- 已完成：反馈（上传实物图/现场照片，成功后奖励 1 次打印机会） -->
+      <!-- 已完成：反馈（可多张、可追加、过期也能补交） -->
       <div v-if="detail.status === 'completed'" class="feedback-box">
-        <template v-if="detail.feedback_url">
-          <van-cell-group inset title="反馈">
-            <van-cell title="反馈图片">
-              <template #value>
-                <img :src="assetUrl(detail.feedback_url)" class="feedback-img" alt="反馈图片" @click="previewFeedback" />
-              </template>
-            </van-cell>
-            <van-cell title="反馈时间" :value="detail.feedback_at || '—'" />
-          <van-cell v-if="detail.feedback_reviewed === false" title="审核状态" value="待管理员审核" />
-          <van-cell v-else-if="detail.feedback_reviewed === 1" title="审核状态" value="已通过" />
-          </van-cell-group>
-        </template>
+        <van-cell-group v-if="feedbackImages.length" inset title="反馈">
+          <van-cell title="反馈图片" :value="`${feedbackImages.length} 张`" />
+          <div class="fb-grid">
+            <img
+              v-for="(img, i) in feedbackImages"
+              :key="img.id || img.url"
+              :src="assetUrl(img.url)"
+              class="fb-thumb"
+              alt="反馈图片"
+              @click="previewFeedback(i)"
+            />
+          </div>
+          <van-cell title="反馈时间" :value="detail.feedback_at || '—'" />
+          <van-cell title="审核状态" :value="feedbackReviewText" />
+          <van-cell v-if="detail.expired" title="说明" value="已过期补交，待管理员审核，不发放奖励" />
+        </van-cell-group>
+
+        <!-- 学生：上传 / 追加（过期也能传） -->
+        <div v-if="!isAdmin" class="action-bar">
+          <van-uploader
+            v-model="fileList"
+            :after-read="onUploadFeedback"
+            accept="image/*"
+            multiple
+            :max-count="9"
+            :max-size="5 * 1024 * 1024"
+            @oversize="onOversize"
+          >
+            <van-button round block type="primary" :loading="submittingFeedback">
+              {{ feedbackImages.length ? '追加反馈图片' : '上传实物图 / 现场照片' }}
+            </van-button>
+          </van-uploader>
+          <p class="feedback-tip">
+            可一次选多张，也可以分次追加；不满意随时重新上传。
+            {{ detail.expired
+              ? '该申请已过期，补交后需管理员审核，不再发放奖励。'
+              : '反馈通过后可领取 1 次打印机会。' }}
+          </p>
+          <p v-if="!detail.expired && detail.feedback_deadline" class="feedback-tip deadline">
+            建议在 {{ detail.feedback_deadline }} 前提交，超过后仍可补交但不再发放奖励。
+          </p>
+        </div>
+
         <!-- 管理员：反馈审核 -->
         <div v-if="isAdmin && detail.feedback_reviewed === false" class="action-bar">
           <van-button type="success" round block @click="reviewShow = true">反馈通过（自选奖励）</van-button>
           <van-button type="danger" round block plain style="margin-top: 10px" @click="onFeedbackReview('reject')">反馈拒绝（可重传）</van-button>
-        </div>
-        <!-- 未过期才显示上传（过期后接口也会拦截） -->
-        <div v-else-if="!detail.expired" class="action-bar">
-          <van-uploader :after-read="onUploadFeedback" accept="image/*" :max-count="1">
-            <van-button round block type="primary" :loading="submittingFeedback">
-              上传实物图 / 现场照片
-            </van-button>
-          </van-uploader>
-          <p class="feedback-tip">上传打印件用途的实物图或参赛现场照片，反馈成功后可领取 1 次打印机会。</p>
-          <p v-if="detail.feedback_deadline" class="feedback-tip deadline">
-            请在 {{ detail.feedback_deadline }} 前提交反馈，逾期将自动过期且不再发放奖励。
-          </p>
         </div>
       </div>
 
@@ -280,7 +332,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { showConfirmDialog, showSuccessToast, showImagePreview } from 'vant'
+import { showConfirmDialog, showSuccessToast, showFailToast, showImagePreview } from 'vant'
 import {
   getApplicationDetail,
   submitFeedback,
@@ -289,8 +341,9 @@ import {
   downloadBlob,
   withdrawApplication,
 } from '../api/application'
-import { updateApplicationStatus, reviewFeedback, resendSms, testSms } from '../api/admin'
+import { updateApplicationStatus, reviewFeedback, resendSms, testSms, remindFeedbackSms } from '../api/admin'
 import { useAuthStore } from '../store/auth'
+import { withOperator } from '../utils/operator'
 import { assetUrl } from '../utils/server'
 import PrinterPicker from '../components/PrinterPicker.vue'
 import { STATUS, PURPOSE_TEXT } from '../utils/constants'
@@ -302,6 +355,21 @@ const auth = useAuthStore()
 const detail = ref(null)
 const loading = ref(true)
 const submittingFeedback = ref(false)
+const fileList = ref([])
+
+// 反馈图片：兼容老数据（只有 feedback_url 单图）
+const feedbackImages = computed(() => {
+  const list = detail.value?.feedback_images || []
+  if (list.length) return list
+  return detail.value?.feedback_url ? [{ id: 0, url: detail.value.feedback_url }] : []
+})
+
+const feedbackReviewText = computed(() => {
+  const r = detail.value?.feedback_reviewed
+  if (r === true || r === 1) return '已通过'
+  if (r === false || r === 0) return '待管理员审核'
+  return detail.value?.expired ? '已过期补交（待管理员审核，不发放奖励）' : '已记录'
+})
 const exporting = ref(false)
 const withdrawing = ref(false)
 const picker = ref(null)
@@ -427,29 +495,38 @@ async function onWithdraw() {
   }
 }
 
-async function onUploadFeedback(file) {
-  if (!file || !file.file) return
+async function onUploadFeedback(files) {
+  const list = Array.isArray(files) ? files : [files]
+  const picked = list.filter((f) => f && f.file).map((f) => f.file)
+  if (!picked.length) return
   submittingFeedback.value = true
   const fd = new FormData()
-  fd.append('file', file.file)
+  picked.forEach((f) => fd.append('file', f))
   try {
     detail.value = await submitFeedback(detail.value.id, fd)
-    showSuccessToast('反馈成功，已奖励 1 次打印机会')
+    fileList.value = []
+    showSuccessToast('反馈图片已上传')
   } catch (e) {
+    fileList.value = []
     /* 拦截器已提示 */
   } finally {
     submittingFeedback.value = false
   }
 }
 
-function previewFeedback() {
-  if (detail.value?.feedback_url) {
-    showImagePreview({
-      images: [assetUrl(detail.value.feedback_url)],
-      closeable: true,
-      closeOnPopstate: true,
-    })
-  }
+function onOversize() {
+  showFailToast('单张图片不能超过 5MB')
+}
+
+function previewFeedback(index = 0) {
+  const images = feedbackImages.value.map((i) => assetUrl(i.url))
+  if (!images.length) return
+  showImagePreview({
+    images,
+    startPosition: index,
+    closeable: true,
+    closeOnPopstate: true,
+  })
 }
 
 function previewSign() {
@@ -481,8 +558,15 @@ async function onFeedbackReview(action, rewardCount = 1) {
       return
     }
   }
+  const op = await withOperator(auth, '记录反馈审核人', '公共管理员账号审核反馈，请填写实际操作人学号')
+  if (!op.ok) return
   try {
-    detail.value = await reviewFeedback({ id: detail.value.id, action, reward: rewardCount })
+    detail.value = await reviewFeedback({
+      id: detail.value.id,
+      action,
+      reward: rewardCount,
+      operator_student_id: op.studentId,
+    })
     showSuccessToast(action === 'approve' ? `已通过，奖励 ${rewardCount} 次已发放` : '已拒绝')
   } catch (e) {
     /* 拦截器已提示 */
@@ -525,15 +609,49 @@ async function onTestSms() {
   }
 }
 
+// —— 反馈提醒短信（管理员，未反馈/已过期）——
+const remindSending = ref(false)
+
+async function onRemindFeedback() {
+  try {
+    await showConfirmDialog({
+      title: '反馈提醒短信',
+      message: `确定给 ${detail.value.applicant?.name || '申请人'}（${
+        detail.value.applicant?.phone || '未填手机号'
+      }）发送反馈提醒短信吗？`,
+    })
+  } catch (e) {
+    return
+  }
+  remindSending.value = true
+  try {
+    const res = await remindFeedbackSms(detail.value.id)
+    showSuccessToast(res?.queued ? '网关暂不可达，已加入待发队列' : '提醒短信已发送')
+  } catch (e) {
+    /* 拦截器已提示失败原因 */
+  } finally {
+    remindSending.value = false
+  }
+}
+
 // 手动标记完成（正常情况下打印到 100% 会自动完成，这里作为兜底）
-async function advance(status) {  const text = status === 'printing' ? '确定开始打印该申请吗？' : '确定标记为已完成吗？'
+async function advance(status) {
+  const text = status === 'printing' ? '确定开始打印该申请吗？' : '确定标记为已完成吗？'
   try {
     await showConfirmDialog({ title: '状态更新', message: text })
   } catch (e) {
     return // 取消
   }
+  const op = status === 'printing'
+    ? await withOperator(auth, '记录打印人', '公共管理员账号开始打印，请填写实际操作人学号')
+    : { ok: true, studentId: null }
+  if (!op.ok) return
   try {
-    await updateApplicationStatus({ id: detail.value.id, status })
+    await updateApplicationStatus({
+      id: detail.value.id,
+      status,
+      operator_student_id: op.studentId,
+    })
     showSuccessToast('状态已更新')
     load()
   } catch (e) {
@@ -573,6 +691,23 @@ async function advance(status) {  const text = status === 'printing' ? '确定�
   border-radius: 6px;
   vertical-align: middle;
   cursor: pointer;
+}
+.fb-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 16px 12px;
+}
+.fb-thumb {
+  width: 72px;
+  height: 72px;
+  object-fit: cover;
+  border-radius: 8px;
+  background: #f2f3f5;
+  cursor: pointer;
+}
+.fb-thumb:active {
+  opacity: 0.75;
 }
 .feedback-tip {
   margin: 8px 4px 0;

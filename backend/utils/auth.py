@@ -71,3 +71,29 @@ def super_required(fn):
             return fail("仅超级管理员可操作", code=403, http_status=403)
         return fn(*args, **kwargs)
     return wrapper
+
+
+def resolve_operator(data=None, required=True):
+    """确定这次操作「实际由谁完成」，返回 (操作人, 错误响应)。
+
+    - 普通管理员/超管：操作人就是当前登录用户；
+    - 公共管理员（admin 共享号）：请求里必须带 operator_student_id，
+      按学号找到对应账号，把他的身份记到审批人/打印人/拆封人上，
+      这样多人用同一个公共号也能追溯到具体的人。
+    """
+    user = getattr(g, "user", None)
+    if user is None:
+        return None, fail("未登录", code=401, http_status=401)
+    if not getattr(user, "is_shared_admin", False):
+        return user, None
+
+    sid = ((data or {}).get("operator_student_id") or "").strip()
+    if not sid:
+        if not required:
+            return user, None
+        return None, fail("请填写实际操作人的学号（公共管理员账号需要记录操作人）", code=1002)
+
+    operator = db.session.query(User).filter_by(student_id=sid).first()
+    if operator is None:
+        return None, fail(f"未找到学号 {sid} 的账号，请让对方先登录一次系统", code=1002)
+    return operator, None

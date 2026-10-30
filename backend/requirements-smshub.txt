@@ -1,0 +1,7 @@
+﻿# 内嵌 sms-hub（短信网关）需要的额外依赖
+# 只有把 sms-hub 并进主平台（SMSHUB_EMBEDDED=1）时才需要装这些
+fastapi>=0.110
+uvicorn>=0.29
+aiosqlite>=0.20
+aiosmtplib>=3.0
+httpx>=0.27

@@ -54,10 +54,10 @@
         <div class="hub-desc">上传新版 APK，App 提示更新</div>
       </div>
 
-      <div class="hub-item" @click="$router.push('/admin/sms')">
+      <div class="hub-item" @click="$router.push('/admin/notify')">
         <div class="hub-icon" style="--c: #07c160"><van-icon name="chat-o" /></div>
-        <div class="hub-name">短信通知</div>
-        <div class="hub-desc">查看发送记录，自定义发短信</div>
+        <div class="hub-name">消息通知</div>
+        <div class="hub-desc">收件 / 发送 / 状态 / 设置</div>
       </div>
     </div>
 

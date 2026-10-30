@@ -1,178 +1,181 @@
 <template>
   <div class="page home">
-    <!-- 顶部主视觉：校园航拍 + 问候 -->
-    <div class="hero">
-      <div class="hero-inner">
-        <div class="avatar">{{ avatarText }}</div>
-        <div class="hello">
-          <div class="greet">{{ greeting }}，{{ user?.name || user?.student_id || '同学' }}</div>
-          <div class="sub">{{ user?.college || '欢迎使用 3D 打印服务' }}</div>
-        </div>
-        <img :src="hustRound" class="hero-badge" alt="哈尔滨理工大学" />
-      </div>
-    </div>
-
-    <!-- 配额卡片 -->
-    <div class="quota-card">
-      <div class="quota-left">
-        <div class="quota-label">本学期剩余打印次数</div>
-        <div class="quota-num">{{ remaining }}<span class="unit"> 次</span></div>
-      </div>
-      <van-button
-        v-if="remaining > 0"
-        type="primary"
-        round
-        class="quota-btn"
-        @click="$router.push('/apply')"
-      >
-        立即申请打印
-      </van-button>
-      <van-button v-else type="default" round class="quota-btn" disabled>
-        次数已用完
-      </van-button>
-    </div>
-
-    <!-- 快捷入口 -->
-    <van-grid :column-num="4" :border="false" class="quick-grid">
-      <van-grid-item to="/applications">
-        <div class="q-icon" style="--c: #2f6bff"><van-icon name="records" /></div>
-        <span class="q-text">我的申请</span>
-      </van-grid-item>
-      <van-grid-item to="/guide">
-        <div class="q-icon" style="--c: #ff976a"><van-icon name="question-o" /></div>
-        <span class="q-text">使用指南</span>
-      </van-grid-item>
-      <van-grid-item to="/chat">
-        <div class="q-icon" style="--c: #07c160">
-          <van-badge :content="unread > 0 ? String(unread) : undefined" max="99">
-            <van-icon name="chat-o" />
-          </van-badge>
-        </div>
-        <span class="q-text">联系工作室</span>
-      </van-grid-item>
-      <van-grid-item v-if="isAdmin" to="/admin">
-        <van-badge :content="todoBadge > 0 ? String(todoBadge) : undefined" max="99">
-          <div class="q-icon" style="--c: #7232dd"><van-icon name="setting-o" /></div>
-        </van-badge>
-        <span class="q-text">管理后台</span>
-      </van-grid-item>
-      <van-grid-item v-else @click="openFeedback">
-        <van-badge :content="feedbackCount > 0 ? String(feedbackCount) : undefined" max="99">
-          <div class="q-icon" style="--c: #7232dd"><van-icon name="photo-o" /></div>
-        </van-badge>
-        <span class="q-text">提交反馈</span>
-      </van-grid-item>
-    </van-grid>
-
-    <!-- 待办任务：管理员看汇总（点击进入对应管理页），学生看逐条待办（带操作） -->
-    <div v-if="todoItems.length" class="todo-card">
-      <div class="todo-title">待办任务</div>
-
-      <!-- 管理员：汇总行 -->
-      <template v-if="isAdmin">
-        <div v-for="t in todoItems" :key="t.kind" class="todo-row"
-             @click="$router.push(t.cat ? `${t.link}?cat=${t.cat}` : t.link)">
-          <div class="todo-icon" :style="{ '--c': t.color }"><van-icon :name="t.icon" /></div>
-          <span class="todo-label">{{ t.label }}</span>
-          <span class="todo-count" :class="{ zero: !t.count }">{{ t.count }}</span>
-          <van-icon name="arrow" color="#c8c9cc" />
-        </div>
-      </template>
-
-      <!-- 学生：逐条待办（待取件 / 待反馈） -->
-      <template v-else>
-        <div v-for="t in todoItems" :key="`${t.kind}-${t.id}`" class="todo-row" @click="$router.push(`/application/${t.id}`)">
-          <div class="todo-icon" :style="{ '--c': t.kind === 'pickup' ? '#ff976a' : '#2f6bff' }">
-            <van-icon :name="t.kind === 'pickup' ? 'gift-o' : 'photograph'" />
+    <van-pull-refresh v-model="refreshing" @refresh="onRefresh">
+      <!-- 顶部主视觉：校园航拍 + 问候 -->
+      <div class="hero">
+        <div class="hero-inner">
+          <div class="avatar">{{ avatarText }}</div>
+          <div class="hello">
+            <div class="greet">{{ greeting }}，{{ user?.name || user?.student_id || '同学' }}</div>
+            <div class="sub">{{ user?.college || '欢迎使用 3D 打印服务' }}</div>
           </div>
-          <div class="todo-main">
-            <div class="todo-label">
-              <van-tag :color="t.kind === 'pickup' ? '#ff976a' : '#2f6bff'" style="margin-right: 6px">
-                {{ t.kind === 'pickup' ? '待取件' : '待反馈' }}
-              </van-tag>
-              <span class="todo-no">{{ t.apply_no }}</span>
-            </div>
-            <div class="todo-sub">{{ todoLabel(t) }}</div>
-          </div>
-          <van-button
-            v-if="t.kind === 'pickup'"
-            size="mini"
-            type="primary"
-            round
-            :loading="picking"
-            @click.stop="onPickupDone(t)"
-          >
-            已领取
-          </van-button>
-          <van-button
-            v-else
-            size="mini"
-            type="success"
-            round
-            :loading="uploadingId === t.id"
-            @click.stop="triggerUpload(t)"
-          >
-            上传反馈图
-          </van-button>
+          <img :src="hustRound" class="hero-badge" alt="哈尔滨理工大学" />
         </div>
-      </template>
-    </div>
+      </div>
 
-    <!-- 隐藏的文件选择器：上传反馈图（相册）/ 拍照 -->
-    <input
-      ref="fileInput"
-      type="file"
-      accept="image/*"
-      class="hidden-file"
-      @change="onFilePicked"
-    />
-    <input
-      ref="cameraInput"
-      type="file"
-      accept="image/*"
-      capture="environment"
-      class="hidden-file"
-      @change="onFilePicked"
-    />
-
-    <!-- 最新通知（默认折叠展示几条，点右侧箭头展开/收起） -->
-    <div class="notify-title">
-      最新通知
-      <span
-        v-if="canExpandNotices"
-        class="notify-toggle"
-        :class="{ open: noticesExpanded }"
-        @click="toggleNotices"
-      >
-        <van-icon name="arrow" />
-      </span>
-    </div>
-    <van-cell-group v-if="!notices.length" inset>
-      <van-cell :title="noticesLoading ? '加载中…' : '暂无通知'" />
-    </van-cell-group>
-    <!-- 公告折叠展开：点条目在首页直接展开正文 -->
-    <div v-else class="notice-box">
-      <van-collapse v-model="activeNotice" accordion :border="false">
-        <van-collapse-item
-          v-for="n in shownNotices"
-          :key="n.id"
-          :name="n.id"
-          :title="n.title"
-          :label="`${n.publisher} · ${(n.created_at || '').slice(0, 10)}`"
+      <!-- 配额卡片 -->
+      <div class="quota-card">
+        <div class="quota-left">
+          <div class="quota-label">本学期剩余打印次数</div>
+          <div class="quota-num">{{ remaining }}<span class="unit"> 次</span></div>
+        </div>
+        <van-button
+          v-if="remaining > 0"
+          type="primary"
+          round
+          class="quota-btn"
+          @click="$router.push('/apply')"
         >
-          <div class="notice-text">{{ noticeContents[n.id] ?? '加载中…' }}</div>
-          <div
-            class="notice-detail-link"
-            @click.stop="$router.push({ name: 'notice-detail', params: { id: n.id } })"
-          >
-            查看详情 ›
+          立即申请打印
+        </van-button>
+        <van-button v-else type="default" round class="quota-btn" disabled>
+          次数已用完
+        </van-button>
+      </div>
+
+      <!-- 快捷入口 -->
+      <van-grid :column-num="4" :border="false" class="quick-grid">
+        <van-grid-item to="/applications">
+          <div class="q-icon" style="--c: #2f6bff"><van-icon name="records" /></div>
+          <span class="q-text">我的申请</span>
+        </van-grid-item>
+        <van-grid-item to="/guide">
+          <div class="q-icon" style="--c: #ff976a"><van-icon name="question-o" /></div>
+          <span class="q-text">使用指南</span>
+        </van-grid-item>
+        <van-grid-item to="/chat">
+          <div class="q-icon" style="--c: #07c160">
+            <van-badge :content="unread > 0 ? String(unread) : undefined" max="99">
+              <van-icon name="chat-o" />
+            </van-badge>
           </div>
-        </van-collapse-item>
-      </van-collapse>
-    </div>
-    <div v-if="notices.length" class="notify-footer" @click="$router.push('/notices')">
-      查看全部公告 ›
-    </div>
+          <span class="q-text">联系工作室</span>
+        </van-grid-item>
+        <van-grid-item v-if="isAdmin" to="/admin">
+          <van-badge :content="todoBadge > 0 ? String(todoBadge) : undefined" max="99">
+            <div class="q-icon" style="--c: #7232dd"><van-icon name="setting-o" /></div>
+          </van-badge>
+          <span class="q-text">管理后台</span>
+        </van-grid-item>
+        <van-grid-item v-else @click="openFeedback">
+          <van-badge :content="feedbackCount > 0 ? String(feedbackCount) : undefined" max="99">
+            <div class="q-icon" style="--c: #7232dd"><van-icon name="photo-o" /></div>
+          </van-badge>
+          <span class="q-text">提交反馈</span>
+        </van-grid-item>
+      </van-grid>
+
+      <!-- 待办任务：管理员看汇总（点击进入对应管理页），学生看逐条待办（带操作） -->
+      <div v-if="todoItems.length" class="todo-card">
+        <div class="todo-title">待办任务</div>
+
+        <!-- 管理员：汇总行 -->
+        <template v-if="isAdmin">
+          <div v-for="t in todoItems" :key="t.kind" class="todo-row"
+               @click="$router.push(t.cat ? `${t.link}?cat=${t.cat}` : t.link)">
+            <div class="todo-icon" :style="{ '--c': t.color }"><van-icon :name="t.icon" /></div>
+            <span class="todo-label">{{ t.label }}</span>
+            <span class="todo-count" :class="{ zero: !t.count }">{{ t.count }}</span>
+            <van-icon name="arrow" color="#c8c9cc" />
+          </div>
+        </template>
+
+        <!-- 学生：逐条待办（待取件 / 待反馈） -->
+        <template v-else>
+          <div v-for="t in todoItems" :key="`${t.kind}-${t.id}`" class="todo-row" @click="$router.push(`/application/${t.id}`)">
+            <div class="todo-icon" :style="{ '--c': t.kind === 'pickup' ? '#ff976a' : '#2f6bff' }">
+              <van-icon :name="t.kind === 'pickup' ? 'gift-o' : 'photograph'" />
+            </div>
+            <div class="todo-main">
+              <div class="todo-label">
+                <van-tag :color="t.kind === 'pickup' ? '#ff976a' : '#2f6bff'" style="margin-right: 6px">
+                  {{ t.kind === 'pickup' ? '待取件' : '待反馈' }}
+                </van-tag>
+                <span class="todo-no">{{ t.apply_no }}</span>
+              </div>
+              <div class="todo-sub">{{ todoLabel(t) }}</div>
+            </div>
+            <van-button
+              v-if="t.kind === 'pickup'"
+              size="mini"
+              type="primary"
+              round
+              :loading="picking"
+              @click.stop="onPickupDone(t)"
+            >
+              已领取
+            </van-button>
+            <van-button
+              v-else
+              size="mini"
+              type="success"
+              round
+              :loading="uploadingId === t.id"
+              @click.stop="triggerUpload(t)"
+            >
+              上传反馈图
+            </van-button>
+          </div>
+        </template>
+      </div>
+
+      <!-- 隐藏的文件选择器：上传反馈图（相册）/ 拍照 -->
+      <input
+        ref="fileInput"
+        type="file"
+        accept="image/*"
+        class="hidden-file"
+        @change="onFilePicked"
+      />
+      <input
+        ref="cameraInput"
+        type="file"
+        accept="image/*"
+        capture="environment"
+        class="hidden-file"
+        @change="onFilePicked"
+      />
+
+      <!-- 最新通知（默认折叠展示几条，点右侧箭头展开/收起） -->
+      <div class="notify-title">
+        最新通知
+        <span
+          v-if="canExpandNotices"
+          class="notify-toggle"
+          :class="{ open: noticesExpanded }"
+          @click="toggleNotices"
+        >
+          <van-icon name="arrow" />
+        </span>
+      </div>
+      <van-cell-group v-if="!notices.length" inset>
+        <van-cell :title="noticesLoading ? '加载中…' : '暂无通知'" />
+      </van-cell-group>
+      <!-- 公告折叠展开：点条目在首页直接展开正文 -->
+      <div v-else class="notice-box">
+        <van-collapse v-model="activeNotice" accordion :border="false">
+          <van-collapse-item
+            v-for="n in shownNotices"
+            :key="n.id"
+            :name="n.id"
+            :title="n.title"
+            :label="`${n.publisher} · ${(n.created_at || '').slice(0, 10)}`"
+          >
+            <div class="notice-text">{{ noticeContents[n.id] ?? '加载中…' }}</div>
+            <div
+              class="notice-detail-link"
+              @click.stop="$router.push({ name: 'notice-detail', params: { id: n.id } })"
+            >
+              查看详情 ›
+            </div>
+          </van-collapse-item>
+        </van-collapse>
+      </div>
+      <div v-if="notices.length" class="notify-footer" @click="$router.push('/notices')">
+        查看全部公告 ›
+      </div>
+
+    </van-pull-refresh>
 
     <!-- 取件提醒弹窗：打印件完成时在首页弹出 -->
     <van-popup
@@ -223,12 +226,16 @@
             <div class="fb-info">
               <div class="fb-head">
                 <span class="fb-no">{{ it.apply_no }}</span>
-                <van-tag color="#ff976a" round>未反馈</van-tag>
+                <van-tag v-if="it.expired" color="#ee0a24" round>已过期·可补交</van-tag>
+                <van-tag v-else color="#ff976a" round>未反馈</van-tag>
               </div>
               <div class="fb-file">{{ it.file_name || '—' }}</div>
               <div class="fb-time">完成时间：{{ it.completed_at || '—' }}</div>
-              <div v-if="it.feedback_deadline" class="fb-deadline">
-                请在 {{ it.feedback_deadline }} 前反馈，逾期不再发放奖励
+              <div v-if="it.expired" class="fb-deadline expired">
+                已超过 {{ it.feedback_deadline }}，仍可上传，但不再发放奖励
+              </div>
+              <div v-else-if="it.feedback_deadline" class="fb-deadline">
+                请在 {{ it.feedback_deadline }} 前反馈，通过后可领 1 次打印机会
               </div>
             </div>
             <van-button
@@ -263,7 +270,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, onActivated, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { showSuccessToast, showFailToast } from 'vant'
 import { getUserInfo, getQuota } from '../api/user'
@@ -372,6 +379,7 @@ const todoBadge = computed(() =>
 function todoLabel(t) {
   const file = t.file_name || '模型文件'
   if (t.kind === 'pickup') return `${file} · 打印完成 ${t.completed_at || ''}`
+  if (t.expired) return `${file} · 已过期，仍可补交（无奖励）`
   return t.feedback_deadline ? `${file} · 请在 ${t.feedback_deadline} 前反馈` : file
 }
 
@@ -523,6 +531,12 @@ onMounted(() => {
 
 onUnmounted(() => clearInterval(pickupTimer))
 
+// keep-alive 缓存页：切回首页时刷新待办与取件提醒（保持数据新鲜）
+onActivated(() => {
+  loadPickup()
+  loadTodos()
+})
+
 // 拉取待确认的取件提醒，有就弹窗
 async function loadPickup() {
   if (snoozed || document.hidden || pickupShow.value) return
@@ -565,6 +579,22 @@ async function onPickupAck() {
 async function onPickupView() {
   const appId = await ackPickup()
   if (appId) router.push(`/application/${appId}`)
+}
+
+// —— App 下拉刷新：刷新首页全部数据 ——
+const refreshing = ref(false)
+async function onRefresh() {
+  try {
+    await Promise.all([
+      loadPickup(),
+      loadTodos(),
+      getQuota().then((q) => (remaining.value = q.remaining)).catch(() => {}),
+      getChatUnread(true).then((d) => (unread.value = d.count || 0)).catch(() => {}),
+      getNoticeList().then((l) => (notices.value = l || [])).catch(() => {}),
+    ])
+  } finally {
+    refreshing.value = false
+  }
 }
 </script>
 
@@ -996,6 +1026,9 @@ async function onPickupView() {
   margin-top: 2px;
   font-size: 11px;
   color: #ff976a;
+}
+.fb-deadline.expired {
+  color: #ee0a24;
 }
 .fb-btns {
   margin-top: 14px;

@@ -39,6 +39,8 @@ def _cfg(app=None):
     if not urls:
         one = (cfg.get("SMS_GATEWAY_URL") or "").strip()
         urls = [one] if one else []
+    if (cfg.get("SMS_PROVIDER") or "").strip().lower() == "smshub":
+        urls = []  # sms-hub 用 SMSHUB_BASE_URL，不走网关列表
     return {
         "enabled": bool(cfg.get("SMS_ENABLED")),
         "urls": list(urls),
@@ -79,13 +81,29 @@ def _snip(resp, limit=80):
 
 
 def build_message(app_obj, template=None):
-    """渲染取件短信正文。"""
-    tpl = template if template is not None else _cfg()["template"]
-    return _fill(tpl, {
+    """渲染取件短信正文（模板可在「消息通知 → 设置」里编辑）。"""
+    if template is None:
+        from services import notify_templates
+        return notify_templates.render_pickup_sms(app_obj)
+    return _fill(template, {
         "name": app_obj.user.name if app_obj.user else "",
         "apply_no": app_obj.apply_no,
         "file_name": app_obj.file_name or "",
     }).strip()
+
+
+def build_feedback_remind_message(app_obj, expired=None):
+    """渲染反馈提醒短信正文（未反馈/已过期的申请，管理员手动发送）。
+
+    走「消息通知 → 设置」里可编辑的两套模板：
+      未过期 → NOTIFY_SMS_REMIND；已过期 → NOTIFY_SMS_REMIND_EXPIRED。
+    expired=None 时按申请当前是否已过期自动选择。
+    """
+    from services import notify_templates
+
+    if expired is None:
+        expired = getattr(app_obj, "expired_at", None) is not None
+    return notify_templates.render_remind_sms(app_obj, expired=bool(expired))
 
 
 def build_url(cfg, phone, message):
@@ -107,6 +125,10 @@ def deliver(cfg, phone, message):
     """
     if not cfg["enabled"]:
         return False, "未启用短信通知（SMS_ENABLED=0）", False, None
+    if cfg["provider"] == "smshub":
+        # sms-hub 自带令牌/重试，不需要网关列表
+        ok, detail, unreachable = _deliver_one(cfg, "", phone, message)
+        return ok, detail, unreachable, "sms-hub"
     if not cfg["urls"]:
         return False, "未配置短信网关地址（SMS_GATEWAY_URL）", False, None
     if not PHONE_RE.match(phone or ""):
@@ -136,6 +158,20 @@ def _deliver_one(cfg, url, phone, message):
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         except Exception:
             pass
+
+    # —— 通道零：sms-hub（ESP32C3 + 4G 模组短信网关，推荐）——
+    if cfg["provider"] == "smshub":
+        from services import sms_hub
+
+        if not PHONE_RE.match(phone or ""):
+            return False, "手机号格式不正确，未发送", False
+        try:
+            res = sms_hub.send_text(phone, message)
+            return True, f"已发送（sms-hub #{res.get('id')}，{res.get('parts') or 1} 段）", False
+        except sms_hub.SmsHubError as e:
+            return False, str(e)[:200], bool(getattr(e, "retryable", False))
+        except Exception as e:
+            return False, f"发送失败：{type(e).__name__}: {str(e)[:100]}", False
 
     # —— 通道一：POST JSON 报文（SmsForwarder「主动控制」这类接口）——
     if cfg["provider"] == "json":
@@ -273,6 +309,9 @@ def notify_pickup_sms(app_obj, force=False, sync=False):
     """
     if not current_app.config.get("SMS_ENABLED"):
         return None
+    # 「消息通知 → 设置」里的自动短信开关
+    if not force and not current_app.config.get("NOTIFY_AUTO_SMS", True):
+        return None
     if app_obj.sms_sent_at is not None and not force:
         return None
     phone = ((app_obj.user.phone if app_obj.user else "") or "").strip()
@@ -405,11 +444,15 @@ def remove_gateway(url):
 
 
 def probe_gateway(timeout=3):
-    """逐个探测网关是否可达（只做 TCP 连通性判断，不发短信）。
+    """逐个探测网关是否可达（只做连通性判断，不发短信）。
 
     返回 [{"url":..., "reachable": bool}]。
     """
     cfg = _cfg()
+    if cfg["provider"] == "smshub":
+        from services import sms_hub
+        base = (current_app.config.get("SMSHUB_BASE_URL") or "").rstrip("/")
+        return [{"url": base or "sms-hub", "reachable": sms_hub.probe(timeout)}]
     result = []
     for url in cfg["urls"]:
         result.append({"url": url, "reachable": _probe_one(url, timeout)})

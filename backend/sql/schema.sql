@@ -260,3 +260,19 @@ CREATE TABLE IF NOT EXISTS sms_messages (
   KEY idx_sms_status (status),
   KEY idx_sms_created (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='短信发送记录与待发队列';
+
+-- ---------------------------------------------------------------
+-- 11. 反馈图片 application_feedback_images
+--     一单可多张，也可以事后追加（学生不满意可重新上传）
+-- ---------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS application_feedback_images (
+  id             INT          NOT NULL AUTO_INCREMENT COMMENT '主键',
+  application_id INT          NOT NULL COMMENT '申请 print_applications.id',
+  url            VARCHAR(255) NOT NULL COMMENT '图片相对路径 uploads/feedback/..',
+  uploader_id    INT          NULL COMMENT '上传人 users.id',
+  created_at     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '上传时间',
+  PRIMARY KEY (id),
+  KEY idx_fb_app (application_id),
+  CONSTRAINT fk_fb_app FOREIGN KEY (application_id)
+    REFERENCES print_applications (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='反馈图片（一单多张，可追加）';

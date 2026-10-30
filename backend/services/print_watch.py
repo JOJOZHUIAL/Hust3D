@@ -268,16 +268,9 @@ def tick():
         _user = app_obj.user
         if _user and _user.email:
             from services.mailer import send_mail_async
-            _nl = "\n\n"
-            send_mail_async(
-                _user.email,
-                "【3D打印服务】你的打印件已完成，请领取",
-                f"{_user.name or ''} 同学：{_nl}"
-                f"你提交的申请（{app_obj.apply_no}）已由打印机「{printer.name}」打印完成，"
-                f"请携带校园卡到创新创业协会工作室领取。{_nl}"
-                f"领取后欢迎上传实物图反馈，成功可奖励 1 次打印机会。{_nl}"
-                f"理工智造共享平台 · 大学生创新创业协会",
-            )
+            from services import notify_templates
+            _subj, _body = notify_templates.render_pickup_email(app_obj, printer.name)
+            send_mail_async(_user.email, _subj, _body)
         sms_queue.append(app_obj.id)  # 短信在 commit 之后发，避免后台线程读到未提交的数据
         log_action(None, "auto_complete",
                    f"打印机「{printer.name}」打印完 {app_obj.apply_no}，自动标记完成")

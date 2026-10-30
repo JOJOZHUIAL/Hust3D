@@ -1,229 +1,259 @@
 <template>
   <div class="page admin page--wide">
-    <van-nav-bar title="审批管理" left-arrow fixed placeholder @click-left="$router.replace('/admin')">
-      <template #right>
-        <span class="export-link" @click="openExport">导出</span>
-      </template>
-    </van-nav-bar>
+    <van-pull-refresh v-model="refreshing" @refresh="onRefresh">
+      <van-nav-bar title="审批管理" left-arrow fixed placeholder @click-left="$router.replace('/admin')">
+        <template #right>
+          <span class="export-link" @click="openExport">导出</span>
+        </template>
+      </van-nav-bar>
 
-    <!-- 分组筛选 chips（自动换行，无需横向拖拽） -->
-    <div class="chips">
-      <button
-        v-for="c in cats"
-        :key="c.key"
-        class="chip"
-        :class="{ active: active === c.key }"
-        type="button"
-        @click="active = c.key"
-      >
-        {{ c.label }}
-        <span v-if="c.count" class="chip-count">{{ c.count }}</span>
-      </button>
-    </div>
+      <!-- 分组筛选 chips（自动换行，无需横向拖拽） -->
+      <div class="chips">
+        <button
+          v-for="c in cats"
+          :key="c.key"
+          class="chip"
+          :class="{ active: active === c.key }"
+          type="button"
+          @click="active = c.key"
+        >
+          {{ c.label }}
+          <span v-if="c.count" class="chip-count">{{ c.count }}</span>
+        </button>
+      </div>
 
-    <div class="admin-body">
-      <van-empty v-if="!loading && shown.length === 0" :description="`「${activeLabel}」暂无申请`" />
-      <van-card v-for="item in shown" :key="item.id" class="admin-card">
-        <template #title>
-          {{ item.apply_no }}
-          <van-tag v-if="item.status === 'completed' && !item.picked_up" color="#ff976a" style="margin-left: 6px">
-            未领取
-          </van-tag>
-          <van-tag v-if="item.feedback_url && item.feedback_reviewed === false" color="#ffd21e" text-color="#ad6800" style="margin-left: 6px">
-            反馈待审核
-          </van-tag>
-        </template>
-        <template #desc>
-          <div>{{ item.applicant?.name || '—' }} · {{ item.applicant?.college || '' }}</div>
-          <div>{{ PURPOSE_TEXT[item.purpose] || item.purpose }} · {{ item.created_at }}</div>
-          <div v-if="item.file_name" class="who-file">文件：{{ item.file_name }}</div>
-          <div v-if="item.reviewer" class="who">审批人：{{ personText(item.reviewer) }}</div>
-          <div v-if="item.printed_by" class="who">打印人：{{ personText(item.printed_by) }}</div>
-          <div v-if="item.printer" class="who">
-            打印机：{{ item.printer.name }}
-            <template v-if="item.status === 'printing'">
-              <span v-if="item.print_matched && item.print_progress != null"> · 打印中 {{ item.print_progress }}%</span>
-              <span v-else class="warn">
-                · 打印机当前在打别的文件{{ item.print_actual_file ? `（${item.print_actual_file}）` : '' }}，等待开始
-              </span>
-            </template>
-            <span v-if="item.completed_auto"> · 自动完成</span>
-          </div>
-          <div v-else-if="item.status === 'printing'" class="who warn">
-            未指派打印机（打印时若文件名含申请编号会自动认领）
-          </div>
-          <van-progress
-            v-if="item.status === 'printing' && item.print_matched && item.print_progress != null"
-            :percentage="item.print_progress"
-            stroke-width="4"
-            style="margin-top: 6px"
-          />
-        </template>
-        <template #tags>
-          <van-tag :color="STATUS[item.status]?.color">{{ STATUS[item.status]?.text }}</van-tag>
-          <van-tag v-if="item.status === 'completed' && !item.picked_up" color="#ff976a">未领取</van-tag>
-          <van-tag v-if="item.feedback_url && item.feedback_reviewed !== 2" color="#07c160">已反馈</van-tag>
-          <van-tag v-else-if="item.expired" color="#969799">已过期</van-tag>
-          <van-tag v-else-if="item.status === 'completed'" color="#ff976a">未反馈</van-tag>
-        </template>
-        <template #footer>
-          <van-button v-if="item.status === 'pending'" size="small" type="primary" @click="onApprove(item)">通过</van-button>
-          <van-button v-if="item.status === 'pending'" size="small" type="danger" @click="onReject(item)">拒绝</van-button>
-          <van-button v-if="item.status === 'approved'" size="small" type="primary" @click="onStartPrint(item)">开始打印</van-button>
-          <van-button v-if="item.status === 'printing'" size="small" type="success" @click="onAdvance(item, 'completed')">标记完成</van-button>
-          <van-button
-            v-if="item.status === 'approved' || item.status === 'printing'"
-            size="small"
-            plain
-            type="danger"
-            @click="openFailed(item)"
-          >
-            打印失败
-          </van-button>
-          <!-- 反馈审核（FEEDBACK_REWARD_MODE=review 时） -->
-          <template v-if="item.feedback_url && item.feedback_reviewed === false">
-            <van-button size="small" type="success" @click="openReview(item)">反馈通过</van-button>
-            <van-button size="small" plain type="danger" @click="onReview(item, 'reject')">反馈拒绝</van-button>
+      <div class="admin-body">
+        <van-empty v-if="!loading && shown.length === 0" :description="`「${activeLabel}」暂无申请`" />
+        <van-card v-for="item in shown" :key="item.id" class="admin-card">
+          <template #title>
+            {{ item.apply_no }}
+            <van-tag v-if="item.status === 'completed' && !item.picked_up" color="#ff976a" style="margin-left: 6px">
+              未领取
+            </van-tag>
+            <van-tag v-if="item.feedback_url && item.feedback_reviewed === false" color="#ffd21e" text-color="#ad6800" style="margin-left: 6px">
+              反馈待审核
+            </van-tag>
           </template>
-          <van-button size="small" plain @click="$router.push(`/application/${item.id}`)">详情</van-button>
-        </template>
-      </van-card>
-    </div>
+          <template #desc>
+            <div>{{ item.applicant?.name || '—' }} · {{ item.applicant?.college || '' }}</div>
+            <div>{{ PURPOSE_TEXT[item.purpose] || item.purpose }} · {{ item.created_at }}</div>
+            <div v-if="item.file_name" class="who-file">文件：{{ item.file_name }}</div>
+            <div v-if="item.reviewer" class="who">审批人：{{ personText(item.reviewer) }}</div>
+            <div v-if="item.printed_by" class="who">打印人：{{ personText(item.printed_by) }}</div>
+            <div v-if="item.printer" class="who">
+              打印机：{{ item.printer.name }}
+              <template v-if="item.status === 'printing'">
+                <span v-if="item.print_matched && item.print_progress != null"> · 打印中 {{ item.print_progress }}%</span>
+                <span v-else class="warn">
+                  · 打印机当前在打别的文件{{ item.print_actual_file ? `（${item.print_actual_file}）` : '' }}，等待开始
+                </span>
+              </template>
+              <span v-if="item.completed_auto"> · 自动完成</span>
+            </div>
+            <div v-else-if="item.status === 'printing'" class="who warn">
+              未指派打印机（打印时若文件名含申请编号会自动认领）
+            </div>
+            <van-progress
+              v-if="item.status === 'printing' && item.print_matched && item.print_progress != null"
+              :percentage="item.print_progress"
+              stroke-width="4"
+              style="margin-top: 6px"
+            />
+          </template>
+          <template #tags>
+            <van-tag :color="STATUS[item.status]?.color">{{ STATUS[item.status]?.text }}</van-tag>
+            <van-tag v-if="item.status === 'completed' && !item.picked_up" color="#ff976a">未领取</van-tag>
+            <van-tag v-if="item.feedback_url && item.feedback_reviewed !== 2" color="#07c160">已反馈</van-tag>
+            <van-tag v-if="item.feedback_url && item.expired" color="#969799">过期补交</van-tag>
+            <van-tag v-else-if="!item.feedback_url && item.expired" color="#969799">已过期</van-tag>
+            <van-tag v-else-if="!item.feedback_url && item.status === 'completed'" color="#ff976a">未反馈</van-tag>
+          </template>
+          <template #footer>
+            <van-button v-if="item.status === 'pending'" size="small" type="primary" @click="onApprove(item)">通过</van-button>
+            <van-button v-if="item.status === 'pending'" size="small" type="danger" @click="onReject(item)">拒绝</van-button>
+            <van-button v-if="item.status === 'approved'" size="small" type="primary" @click="onStartPrint(item)">开始打印</van-button>
+            <van-button v-if="item.status === 'printing'" size="small" type="success" @click="onAdvance(item, 'completed')">标记完成</van-button>
+            <van-button
+              v-if="item.status === 'approved' || item.status === 'printing'"
+              size="small"
+              plain
+              type="danger"
+              @click="openFailed(item)"
+            >
+              打印失败
+            </van-button>
+            <!-- 反馈审核（FEEDBACK_REWARD_MODE=review 时） -->
+            <template v-if="item.feedback_url && item.feedback_reviewed === false">
+              <van-button size="small" type="success" @click="openReview(item)">反馈通过</van-button>
+              <van-button size="small" plain type="danger" @click="onReview(item, 'reject')">反馈拒绝</van-button>
+            </template>
+            <!-- 未反馈 / 已过期：短信提醒学生交反馈 -->
+            <van-button
+              v-if="item.status === 'completed' && !item.feedback_url"
+              size="small"
+              plain
+              type="warning"
+              icon="chat-o"
+              :loading="remindingId === item.id"
+              @click="onRemindSms(item)"
+            >
+              短信提醒
+            </van-button>
+            <van-button
+              v-if="item.status === 'completed' && !item.feedback_url"
+              size="small"
+              plain
+              type="primary"
+              icon="envelop-o"
+              :loading="emailRemindingId === item.id"
+              @click="onRemindEmail(item)"
+            >
+              邮件提醒
+            </van-button>
+            <van-button size="small" plain @click="$router.push(`/application/${item.id}`)">详情</van-button>
+          </template>
+        </van-card>
+      </div>
 
-    <!-- 拒绝原因弹窗 -->
-    <van-dialog
-      v-model:show="rejectShow"
-      title="拒绝原因"
-      show-cancel-button
-      :before-close="beforeRejectClose"
-    >
-      <van-field
-        v-model="rejectComment"
-        type="textarea"
-        rows="3"
-        autosize
-        placeholder="请填写拒绝原因"
-        class="reject-field"
-      />
-    </van-dialog>
-
-    <!-- 打印失败：原因必填，返还打印次数 -->
-    <van-dialog
-      v-model:show="failedShow"
-      title="标记打印失败"
-      show-cancel-button
-      :before-close="beforeFailedClose"
-    >
-      <div class="reject-field">
+      <!-- 拒绝原因弹窗 -->
+      <van-dialog
+        v-model:show="rejectShow"
+        title="拒绝原因"
+        show-cancel-button
+        :before-close="beforeRejectClose"
+      >
         <van-field
-          v-model="failedComment"
+          v-model="rejectComment"
           type="textarea"
           rows="3"
           autosize
-          placeholder="请填写打印失败原因（会通知学生并返还打印次数）"
+          placeholder="请填写拒绝原因"
+          class="reject-field"
         />
-      </div>
-    </van-dialog>
+      </van-dialog>
 
-    <!-- 反馈通过：自选奖励次数 -->
-    <van-dialog
-      v-model:show="reviewShow"
-      title="反馈通过"
-      show-cancel-button
-      :before-close="beforeReviewClose"
-    >
-      <div class="review-box">
-        <div class="review-item">{{ reviewTarget?.apply_no }}</div>
-        <van-cell title="奖励次数">
-          <template #right-icon>
-            <van-stepper v-model="reward" min="0" max="50" integer style="margin-left: 10px" />
-          </template>
-        </van-cell>
-        <p class="review-tip">填 0 表示仅通过、不发放奖励</p>
-      </div>
-    </van-dialog>
-
-    <!-- 开始打印：选择打印机（绑定后自动监视进度，100% 自动完成） -->
-    <PrinterPicker ref="picker" @success="load" />
-
-    <!-- 导出申请表：选时间范围，导出 ZIP（每个申请一个 Word） -->
-    <van-popup v-model:show="exportShow" position="bottom" round :style="{ maxHeight: '88%' }">
-      <div class="ex">
-        <div class="ex-title">导出申请表</div>
-        <div class="ex-sub">按申请提交时间筛选，导出为 ZIP 压缩包，里面每个申请一个独立的 Word 文件</div>
-
-        <div class="ex-chips">
-          <button
-            v-for="c in EXPORT_CHIPS"
-            :key="c.key"
-            class="ex-chip"
-            :class="{ active: exportMode === c.key }"
-            type="button"
-            @click="pickExportRange(c.key)"
-          >
-            {{ c.label }}
-          </button>
+      <!-- 打印失败：原因必填，返还打印次数 -->
+      <van-dialog
+        v-model:show="failedShow"
+        title="标记打印失败"
+        show-cancel-button
+        :before-close="beforeFailedClose"
+      >
+        <div class="reject-field">
+          <van-field
+            v-model="failedComment"
+            type="textarea"
+            rows="3"
+            autosize
+            placeholder="请填写打印失败原因（会通知学生并返还打印次数）"
+          />
         </div>
+      </van-dialog>
 
-        <div class="ex-range">
-          <div class="ex-range-row">
-            <span class="ex-range-label">开始</span>
-            <span class="ex-range-val">{{ exportStart || '不限' }}</span>
-          </div>
-          <div class="ex-range-row">
-            <span class="ex-range-label">结束</span>
-            <span class="ex-range-val">{{ exportEnd || '不限' }}</span>
-          </div>
-          <div class="ex-range-row">
-            <span class="ex-range-label">数量</span>
-            <span class="ex-range-val">{{ exportCount }} 份</span>
-          </div>
+      <!-- 反馈通过：自选奖励次数 -->
+      <van-dialog
+        v-model:show="reviewShow"
+        title="反馈通过"
+        show-cancel-button
+        :before-close="beforeReviewClose"
+      >
+        <div class="review-box">
+          <div class="review-item">{{ reviewTarget?.apply_no }}</div>
+          <van-cell title="奖励次数">
+            <template #right-icon>
+              <van-stepper v-model="reward" min="0" max="50" integer style="margin-left: 10px" />
+            </template>
+          </van-cell>
+          <p class="review-tip">填 0 表示仅通过、不发放奖励</p>
         </div>
+      </van-dialog>
 
-        <div class="ex-btns">
-          <van-button round plain block @click="exportShow = false">取消</van-button>
-          <van-button
-            round
-            type="primary"
-            block
-            :loading="exporting"
-            :disabled="exportCount === 0"
-            @click="onExport"
-          >
-            导出 Word
-          </van-button>
+      <!-- 开始打印：选择打印机（绑定后自动监视进度，100% 自动完成） -->
+      <PrinterPicker ref="picker" @success="load" />
+
+      <!-- 导出申请表：选时间范围，导出 ZIP（每个申请一个 Word） -->
+      <van-popup v-model:show="exportShow" position="bottom" round :style="{ maxHeight: '88%' }">
+        <div class="ex">
+          <div class="ex-title">导出申请表</div>
+          <div class="ex-sub">按申请提交时间筛选，导出为 ZIP 压缩包，里面每个申请一个独立的 Word 文件</div>
+
+          <div class="ex-chips">
+            <button
+              v-for="c in EXPORT_CHIPS"
+              :key="c.key"
+              class="ex-chip"
+              :class="{ active: exportMode === c.key }"
+              type="button"
+              @click="pickExportRange(c.key)"
+            >
+              {{ c.label }}
+            </button>
+          </div>
+
+          <div class="ex-range">
+            <div class="ex-range-row">
+              <span class="ex-range-label">开始</span>
+              <span class="ex-range-val">{{ exportStart || '不限' }}</span>
+            </div>
+            <div class="ex-range-row">
+              <span class="ex-range-label">结束</span>
+              <span class="ex-range-val">{{ exportEnd || '不限' }}</span>
+            </div>
+            <div class="ex-range-row">
+              <span class="ex-range-label">数量</span>
+              <span class="ex-range-val">{{ exportCount }} 份</span>
+            </div>
+          </div>
+
+          <div class="ex-btns">
+            <van-button round plain block @click="exportShow = false">取消</van-button>
+            <van-button
+              round
+              type="primary"
+              block
+              :loading="exporting"
+              :disabled="exportCount === 0"
+              @click="onExport"
+            >
+              导出 Word
+            </van-button>
+          </div>
+          <p class="ex-tip">单次最多导出 {{ MAX_EXPORT }} 份；导出内容为官方版式申请表。</p>
         </div>
-        <p class="ex-tip">单次最多导出 {{ MAX_EXPORT }} 份；导出内容为官方版式申请表。</p>
-      </div>
-    </van-popup>
+      </van-popup>
 
-    <!-- 自定义导出时间范围 -->
-    <van-calendar
-      v-model:show="calShow"
-      type="range"
-      allow-same-day
-      title="选择导出时间范围"
-      :min-date="calMinDate"
-      :max-date="calMaxDate"
-      @confirm="onCalConfirm"
-    />
+      <!-- 自定义导出时间范围 -->
+      <van-calendar
+        v-model:show="calShow"
+        type="range"
+        allow-same-day
+        title="选择导出时间范围"
+        :min-date="calMinDate"
+        :max-date="calMaxDate"
+        @confirm="onCalConfirm"
+      />
+    </van-pull-refresh>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { showConfirmDialog, showSuccessToast, showFailToast } from 'vant'
 import {
-  getAllApplications, reviewApplication, updateApplicationStatus, reviewFeedback, exportApplications,
+  getAllApplications, reviewApplication, updateApplicationStatus, reviewFeedback,
+  exportApplications, remindFeedbackEmail,
 } from '../../api/admin'
 import { downloadBlob } from '../../api/application'
 import { STATUS, PURPOSE_TEXT } from '../../utils/constants'
 import { readTypeNotifications } from '../../api/notification'
 import { setUnread } from '../../store/notification'
+import { useAuthStore } from '../../store/auth'
+import { withOperator } from '../../utils/operator'
 import PrinterPicker from '../../components/PrinterPicker.vue'
 
 const route = useRoute()
+const auth = useAuthStore()
 
 const list = ref([])
 const loading = ref(true)
@@ -242,7 +272,8 @@ const reward = ref(1)
 
 function openReview(item) {
   reviewTarget.value = item
-  reward.value = 1
+  // 已过期的补交反馈：默认 0（过期通过不奖励）；未过期的默认 1
+  reward.value = item.expired ? 0 : 1
   reviewShow.value = true
 }
 
@@ -261,7 +292,8 @@ const CATS = [
   { key: 'completed', label: '打印完成', match: (x) => x.status === 'completed' },
   { key: 'failed', label: '打印失败', match: (x) => x.status === 'failed' },
   { key: 'unfed', label: '未反馈', match: (x) => x.status === 'completed' && !x.feedback_url && !x.expired },
-  { key: 'expired', label: '已过期', match: (x) => !!x.expired },
+  // 过期后补交了反馈的归入「已反馈」，这里只留过期且尚未反馈的
+  { key: 'expired', label: '已过期', match: (x) => !!x.expired && !x.feedback_url },
   { key: 'fedback', label: '已反馈', match: (x) => !!x.feedback_url },
   { key: 'all', label: '全部申请', match: () => true },
 ]
@@ -297,7 +329,9 @@ function personText(p) {
 async function load() {
   loading.value = true
   try {
-    list.value = await getAllApplications()
+    const next = await getAllApplications()
+    // 内容没变化就不替换，避免轮询导致列表闪动
+    if (JSON.stringify(next) !== JSON.stringify(list.value)) list.value = next
   } catch (e) {
     /* 拦截器已提示 */
   } finally {
@@ -311,8 +345,10 @@ async function onApprove(item) {
   } catch (e) {
     return
   }
+  const op = await withOperator(auth, '记录审批人', '公共管理员账号审批，请填写实际操作人学号')
+  if (!op.ok) return
   try {
-    await reviewApplication({ id: item.id, action: 'approve' })
+    await reviewApplication({ id: item.id, action: 'approve', operator_student_id: op.studentId })
     showSuccessToast('已通过')
     load()
   } catch (e) {
@@ -339,8 +375,15 @@ function beforeRejectClose(action) {
 }
 
 async function submitReject() {
+  const opR = await withOperator(auth, '记录审批人', '公共管理员账号审批，请填写实际操作人学号')
+  if (!opR.ok) return
   try {
-    await reviewApplication({ id: rejectTarget.value.id, action: 'reject', comment: rejectComment.value.trim() })
+    await reviewApplication({
+      id: rejectTarget.value.id,
+      action: 'reject',
+      comment: rejectComment.value.trim(),
+      operator_student_id: opR.studentId,
+    })
     showSuccessToast('已拒绝')
     load()
   } catch (e) {
@@ -357,7 +400,9 @@ async function onAdvance(item, status) {
     return
   }
   try {
-    await updateApplicationStatus({ id: item.id, status })
+    const op = await withOperator(auth, '记录打印人', '公共管理员账号开始打印，请填写实际操作人学号')
+    if (!op.ok) return
+    await updateApplicationStatus({ id: item.id, status, operator_student_id: op.studentId })
     showSuccessToast('状态已更新')
     load()
   } catch (e) {
@@ -388,8 +433,15 @@ function beforeFailedClose(action) {
 }
 
 async function doFailed(item, reason) {
+  const op = await withOperator(auth, '记录操作人', '公共管理员账号标记打印失败，请填写实际操作人学号')
+  if (!op.ok) return
   try {
-    await updateApplicationStatus({ id: item.id, status: 'failed', reason })
+    await updateApplicationStatus({
+      id: item.id,
+      status: 'failed',
+      reason,
+      operator_student_id: op.studentId,
+    })
     showSuccessToast('已标记打印失败，次数已返还')
     load()
   } catch (e) {
@@ -530,7 +582,9 @@ async function onReview(item, action) {
     return
   }
   try {
-    await reviewFeedback({ id: item.id, action })
+    const op = await withOperator(auth, '记录反馈审核人', '公共管理员账号审核反馈，请填写实际操作人学号')
+    if (!op.ok) return
+    await reviewFeedback({ id: item.id, action, operator_student_id: op.studentId })
     showSuccessToast('已拒绝')
     load()
   } catch (e) {
@@ -538,9 +592,68 @@ async function onReview(item, action) {
   }
 }
 
+// —— 未反馈 / 已过期：短信提醒学生交反馈 ——
+const remindingId = ref(0)
+
+async function onRemindSms(item) {
+  const who = item.applicant?.name || '申请人'
+  try {
+    await showConfirmDialog({
+      title: '反馈提醒短信',
+      message: `给 ${who}（${item.applicant?.phone || '未填手机号'}）发送反馈提醒短信？\n内容：完成天数 + 申请编号 + 反馈奖励说明`,
+    })
+  } catch (e) {
+    return
+  }
+  remindingId.value = item.id
+  try {
+    const res = await remindFeedbackSms(item.id)
+    // queued=true 表示网关暂时不可达，已进队列等设备上线自动补发
+    showSuccessToast(res?.queued ? '网关暂不可达，已加入待发队列' : '提醒短信已发送')
+    load()
+  } catch (e) {
+    /* 拦截器已提示 */
+  } finally {
+    remindingId.value = 0
+  }
+}
+
+// —— 未反馈 / 已过期：邮件提醒学生交反馈（与短信提醒并列） ——
+const emailRemindingId = ref(0)
+
+async function onRemindEmail(item) {
+  const who = item.applicant?.name || '申请人'
+  const to = item.applicant?.email || ''
+  const state = item.expired ? '已过期' : '未过期'
+  if (!to) {
+    showFailToast('申请人没有填写电子邮箱')
+    return
+  }
+  try {
+    await showConfirmDialog({
+      title: '反馈提醒邮件',
+      message: `给 ${who}（${to}）发送反馈提醒邮件？
+当前状态：${state}（使用对应的提醒模板）`,
+    })
+  } catch (e) {
+    return
+  }
+  emailRemindingId.value = item.id
+  try {
+    const res = await remindFeedbackEmail(item.id)
+    showSuccessToast(`提醒邮件已发送到 ${res?.to || to}`)
+  } catch (e) {
+    /* 拦截器已提示 */
+  } finally {
+    emailRemindingId.value = 0
+  }
+}
+
 async function doReview(item, action, rewardCount) {
   try {
-    await reviewFeedback({ id: item.id, action, reward: rewardCount })
+    const op2 = await withOperator(auth, '记录反馈审核人', '公共管理员账号审核反馈，请填写实际操作人学号')
+    if (!op2.ok) return
+    await reviewFeedback({ id: item.id, action, reward: rewardCount, operator_student_id: op2.studentId })
     showSuccessToast(action === 'approve' ? `已通过，奖励 ${rewardCount} 次已发放` : '已拒绝')
     load()
   } catch (e) {
@@ -561,7 +674,19 @@ onMounted(() => {
   }, 5000)
 })
 
+// 页面未销毁时再次从通知点进来（query.cat 变化）也要切换分组
+watch(() => route.query.cat, (v) => {
+  if (v && CATS.some((c) => c.key === v)) active.value = v
+})
+
 onUnmounted(() => clearInterval(pollTimer))
+
+// —— App 下拉刷新（原生 App 内由 Capacitor 提供触摸滚动，网页同理）——
+const refreshing = ref(false)
+async function onRefresh() {
+  await load()
+  refreshing.value = false
+}
 </script>
 
 <style scoped>

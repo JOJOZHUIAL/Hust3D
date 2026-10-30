@@ -88,6 +88,9 @@ class Config:
     SMTP_USER = os.getenv("SMTP_USER", "")
     SMTP_PASS = os.getenv("SMTP_PASS", "")
     SMTP_SENDER = os.getenv("SMTP_SENDER", "") or SMTP_USER
+    # IMAP（收件箱拉取）：默认按 SMTP_HOST 推导（smtp.qq.com → imap.qq.com），可手动覆盖
+    IMAP_HOST = os.getenv("IMAP_HOST", "")
+    IMAP_PORT = int(os.getenv("IMAP_PORT", "993"))
     # 反馈有效期：打印完成后多少天内未反馈即标记为已过期（状态仍是已完成，
     # 只是不能再上传反馈、不再发放奖励）；0 表示关闭该机制。
     FEEDBACK_EXPIRE_DAYS = int(os.getenv("FEEDBACK_EXPIRE_DAYS", "7"))
@@ -122,12 +125,56 @@ class Config:
     SMS_GATEWAY_INSECURE = os.getenv("SMS_GATEWAY_INSECURE", "0") == "1"
     # 待发短信队列的重试间隔（秒），网关（手机）恢复后自动补发；0=关闭
     SMS_RETRY_INTERVAL = int(os.getenv("SMS_RETRY_INTERVAL", "60"))
+    # —— 反馈 ——
+    # 奖励发放时机：review=管理员审核通过后 +1；auto=提交即 +1
+    FEEDBACK_REWARD_MODE = (os.getenv("FEEDBACK_REWARD_MODE") or "review").strip().lower()
+    # 已过期的申请补交反馈时是否仍发放奖励：0=不发放（默认），1=发放
+    FEEDBACK_REWARD_EXPIRED = os.getenv("FEEDBACK_REWARD_EXPIRED", "0") == "1"
+
+    # —— sms-hub 短信网关（ESP32C3 + 4G 模组，推荐；替代 SmsForwarder）——
+    SMSHUB_BASE_URL = (os.getenv("SMSHUB_BASE_URL") or "").strip()
+    SMSHUB_USER = (os.getenv("SMSHUB_USER") or "admin").strip()
+    SMSHUB_PASSWORD = os.getenv("SMSHUB_PASSWORD") or ""
+    # 留空则自动挑「已绑定在线设备」的那张 SIM 卡
+    SMSHUB_SIM_ID = (os.getenv("SMSHUB_SIM_ID") or "").strip()
+    SMSHUB_TIMEOUT = float(os.getenv("SMSHUB_TIMEOUT", "10"))
+    SMSHUB_RETRIES = int(os.getenv("SMSHUB_RETRIES", "3"))
+
+    # —— 内嵌模式（把 sms-hub 作为模块并进主平台，单进程单端口）——
+    # 1=启用：由 run_server.py 用 uvicorn 统一托管；0=维持独立 8025 进程
+    SMSHUB_EMBEDDED = os.getenv("SMSHUB_EMBEDDED", "0") == "1"
+    # 固件里 /hook/{token} 用的 token（对应 sms-hub 的 DEVICE_TOKEN）
+    SMSHUB_DEVICE_TOKEN = os.getenv("SMSHUB_DEVICE_TOKEN", "")
+    # 兼容端口：只为「没刷固件、仍指向 :8025」的 ESP32 保留 /hook；0=关闭
+    SMSHUB_LEGACY_PORT = int(os.getenv("SMSHUB_LEGACY_PORT", "8025"))
+    # sms-hub 的数据目录（库 + JWT 密钥；留空自动放 backend/instance/smshub）
+    SMSHUB_DATA_DIR = os.getenv("SMSHUB_DATA_DIR", "")
+    SMSHUB_JWT_SECRET = os.getenv("SMSHUB_JWT_SECRET", "")
+    # —— 自动通知开关（管理端「消息通知 → 设置」可切换，写回 .env）——
+    # 打印完成时是否自动发取件短信 / 自动发邮件
+    NOTIFY_AUTO_SMS = os.getenv("NOTIFY_AUTO_SMS", "1") == "1"
+    NOTIFY_AUTO_EMAIL = os.getenv("NOTIFY_AUTO_EMAIL", "1") == "1"
+
+    # —— 通知模板（管理端可编辑；.env 里换行存成字面量 \n）——
+    NOTIFY_SMS_TEMPLATE = os.getenv("NOTIFY_SMS_TEMPLATE", "")
+    NOTIFY_EMAIL_SUBJECT = os.getenv("NOTIFY_EMAIL_SUBJECT", "")
+    NOTIFY_EMAIL_TEMPLATE = os.getenv("NOTIFY_EMAIL_TEMPLATE", "")
+    # —— 公共管理员（工作室共用账号）——
+    # 权限等同普通管理员；但审批/开打/拆封耗材时必须登记实际操作人学号
+    PUBLIC_ADMIN_USERNAME = (os.getenv("PUBLIC_ADMIN_USERNAME") or "admin").strip()
+    PUBLIC_ADMIN_PASSWORD = os.getenv("PUBLIC_ADMIN_PASSWORD") or "hust3d123456"
     # 短信正文模板，支持 {name} {apply_no} {file_name}
     SMS_TEMPLATE = os.getenv(
         "SMS_TEMPLATE",
         "【3D打印服务】{name}同学，您的打印件（{apply_no}）已打印完成，"
         "请携带校园卡到3D打印工作室领取。",
     )
+    # —— 邮件通知防退信 ——
+    MAIL_CHECK_MX = os.getenv("MAIL_CHECK_MX", "1") == "1"      # 域名 MX 预检
+    MAIL_MAX_FAILS = int(os.getenv("MAIL_MAX_FAILS", "3"))      # 连续失败几次后拉黑
+    MAIL_BLOCK_HOURS = float(os.getenv("MAIL_BLOCK_HOURS", "24"))
+    MAIL_RATE_PER_MIN = int(os.getenv("MAIL_RATE_PER_MIN", "20"))  # 每分钟最多发几封
+
     # 管理员学号清单（逗号分隔），命中即视为管理员角色
     ADMIN_STUDENT_IDS = [s.strip() for s in os.getenv("ADMIN_STUDENT_IDS", "").split(",") if s.strip()]
     # 超级管理员学号清单：可添加/移除管理员（含于 ADMIN_STUDENT_IDS 之上使用）

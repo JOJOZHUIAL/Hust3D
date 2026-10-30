@@ -9,6 +9,9 @@ export const submitApplication = (formData) =>
 // 获取我的申请列表，可选状态筛选
 export const getMyApplications = (params) => request.get('/api/application/list', { params })
 
+// 申请表单需要的配置（反馈期限天数等）
+export const getApplyMeta = () => request.get('/api/application/meta')
+
 // 获取申请详情
 export const getApplicationDetail = (id) => request.get(`/api/application/detail/${id}`)
 

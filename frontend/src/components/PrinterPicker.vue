@@ -65,8 +65,11 @@ import { ref } from 'vue'
 import { showSuccessToast } from 'vant'
 import { getPrinterList } from '../api/printer'
 import { updateApplicationStatus } from '../api/admin'
+import { useAuthStore } from '../store/auth'
+import { withOperator } from '../utils/operator'
 
 const emit = defineEmits(['success'])
+const auth = useAuthStore()
 
 const show = ref(false)
 const app = ref(null)
@@ -103,12 +106,16 @@ async function open(target) {
 }
 
 async function onOk() {
+  // 公共管理员账号：开始打印前必须登记实际操作人
+  const op = await withOperator(auth, '记录打印人', '公共管理员账号开始打印，请填写实际操作人学号')
+  if (!op.ok) return
   saving.value = true
   try {
     await updateApplicationStatus({
       id: app.value.id,
       status: 'printing',
       printer_id: picked.value || undefined,
+      operator_student_id: op.studentId,
     })
     showSuccessToast(picked.value ? '已开始打印，正在监视进度' : '已开始打印')
     show.value = false

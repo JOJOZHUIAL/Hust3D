@@ -14,7 +14,7 @@ from datetime import datetime
 
 from flask import Blueprint, request, g, current_app, send_file
 from extensions import db
-from models import ChatMessage, PrintApplication, feedback_expire_days
+from models import ChatMessage, FeedbackImage, PrintApplication, feedback_expire_days
 from utils.response import ok, fail
 from utils.auth import login_required
 from services.quota import ensure_quota
@@ -155,6 +155,25 @@ def submit():
     material = form.get("material", "PLA") or "PLA"
     remark = form.get("remark", "").strip()
 
+    # 预计反馈时间（选填，YYYY-MM-DD）：学生自己声明的计划反馈日期
+    # 只要填了（即不按默认期限），就必须说明原因
+    expected_raw = (form.get("expected_feedback_at") or "").strip()
+    expected_note = (form.get("expected_feedback_note") or "").strip()
+    expected_feedback_at = None
+    if expected_raw:
+        try:
+            expected_feedback_at = datetime.strptime(expected_raw[:10], "%Y-%m-%d")
+        except ValueError:
+            return fail("预计反馈时间格式不正确", code=1002)
+        if expected_feedback_at.date() < datetime.now().date():
+            return fail("预计反馈时间不能早于今天", code=1002)
+        if not expected_note:
+            return fail("不按默认期限反馈时，请说明情况（例如比赛/课程安排）", code=1002)
+        if len(expected_note) > 200:
+            return fail("情况说明过长（最多 200 字）", code=1002)
+    else:
+        expected_note = None
+
     # 联系方式 / 邮箱（必填，提交时同步更新到用户资料）
     phone = form.get("phone", "").strip()
     email = form.get("email", "").strip()
@@ -195,6 +214,8 @@ def submit():
         file_name=file_name,
         remark=remark,
         sign_url=sign_url,
+        expected_feedback_at=expected_feedback_at,
+        expected_feedback_note=expected_note,
         status="pending",
     )
     db.session.add(app_obj)
@@ -209,7 +230,7 @@ def submit():
     preview = f"{material} x{model_count} · {file_name or ''}"
     notify_admins("apply", f"新打印申请 {apply_no}",
                   f"{user.name or user.student_id} 提交了打印申请：{preview}",
-                  link="/admin/pending")
+                  link="/admin/pending?cat=pending")
     log_action(user.id, "submit_application", f"提交申请 {apply_no}")
 
     try:
@@ -397,7 +418,8 @@ def todos():
         }
         if not r.picked_up:
             pickups.append({**base, "kind": "pickup"})
-        if not r.feedback_url and r.expired_at is None:
+        # 未反馈的都列出来（过期的也能补交反馈，标记 expired 供前端提示）
+        if not r.feedback_url:
             feedbacks.append({**base, "kind": "feedback"})
 
     items = pickups + feedbacks
@@ -438,12 +460,31 @@ def mark_picked_up(app_id):
     return ok(app_obj.to_dict(), msg="已标记为已领取")
 
 
+@bp.route("/meta", methods=["GET"])
+@login_required
+def meta():
+    """申请表单需要的配置（反馈期限天数等）。"""
+    return ok({
+        "feedback_expire_days": feedback_expire_days(),
+        "feedback_reward_mode": current_app.config.get("FEEDBACK_REWARD_MODE") or "review",
+        "reward_expired": bool(current_app.config.get("FEEDBACK_REWARD_EXPIRED")),
+        "default_quota": current_app.config.get("DEFAULT_QUOTA"),
+    })
+
+
 @bp.route("/feedback/<int:app_id>", methods=["POST"])
 @login_required
 def feedback(app_id):
-    """打印完成后提交反馈（上传实物图/现场照片），成功后奖励 1 次打印机会。"""
+    """提交/追加反馈图片（可多张、可重复上传）。
+
+    规则：
+    - 已完成的订单都能上传，**过期也可以补交**；
+    - 过期后的反馈**仍需管理员审核**（是否给奖励由 FEEDBACK_REWARD_EXPIRED 决定）；
+    - 不满意可以再次上传，图片累加不覆盖；
+    - 奖励每单只发一次（feedback_rewarded 保证不会重复加次数）。
+    """
     user = g.user
-    expire_stale_silently()  # 先判过期，避免超期申请还能上传反馈领奖励
+    expire_stale_silently()
     app_obj = db.session.get(PrintApplication, app_id)
     if app_obj is None:
         return fail("申请不存在", code=404, http_status=404)
@@ -451,38 +492,66 @@ def feedback(app_id):
         return fail("无权操作该申请", code=403, http_status=403)
     if app_obj.status != "completed":
         return fail("仅已完成的订单可提交反馈", code=1002)
-    if app_obj.expired_at is not None:
-        return fail(f"该申请反馈已超期（打印完成超过 {feedback_expire_days()} 天未反馈），无法再提交",
-                    code=1002)
-    if app_obj.feedback_url:
-        return fail("该订单已反馈，不可重复提交", code=1002)
 
+    # 支持一次选多张：字段名 file / files 都认
+    uploads = list(request.files.getlist("file")) + list(request.files.getlist("files"))
+    uploads = [f for f in uploads if f is not None and f.filename]
+    if not uploads:
+        return fail("请上传反馈图片", code=1002)
+    if len(uploads) > 9:
+        return fail("一次最多上传 9 张图片", code=1002)
+
+    saved = []
     try:
-        feedback_url = _save_feedback_image(request.files.get("file"))
+        for f in uploads:
+            saved.append(_save_feedback_image(f))
     except ValueError as e:
         return fail(str(e), code=1002)
 
-    app_obj.feedback_url = feedback_url
+    first_time = app_obj.feedback_url is None
+    if first_time:
+        app_obj.feedback_url = saved[0]  # 第一张作封面（列表/下载用）
     app_obj.feedback_at = datetime.now()
-    # 上传反馈即视为已取件（学生在工作室现场拍摄上传），待取件待办自动消失
+    for rel in saved:
+        db.session.add(FeedbackImage(application_id=app_obj.id, url=rel, uploader_id=user.id))
+
+    # 上传反馈即视为已取件（学生在工作室现场拍摄上传）
     if not app_obj.picked_up:
         app_obj.picked_up = True
         app_obj.pick_up_date = datetime.now()
 
-    # 奖励模式由 FEEDBACK_REWARD_MODE 决定：auto=自动+1；review=管理员审核后 +1
-    if current_app.config.get("FEEDBACK_REWARD_MODE") == "review":
+    expired = app_obj.expired_at is not None
+    reward_mode = current_app.config.get("FEEDBACK_REWARD_MODE") or "review"
+    reward_expired = current_app.config.get("FEEDBACK_REWARD_EXPIRED", True)
+    already_rewarded = bool(app_obj.feedback_rewarded)
+
+    if already_rewarded:
+        # 追加图片：审核状态和奖励都不变
+        msg = f"已追加 {len(saved)} 张反馈图片"
+    elif expired:
+        # 过期补交：仍然需要管理员审核，但审核通过也不发奖励
+        app_obj.feedback_reviewed = False
+        notify_admins("feedback", f"过期补交反馈待审核 {app_obj.apply_no}",
+                      f"{user.name or user.student_id} 补交了 {len(saved)} 张实物图"
+                      f"（该申请已过期，通过后不发放奖励）",
+                      link=f"/application/{app_obj.id}")
+        msg = "反馈已补交，等待管理员审核（该申请已过期，不发放奖励）"
+    elif reward_mode == "review":
         app_obj.feedback_reviewed = False
         notify_admins("feedback", f"新反馈待审核 {app_obj.apply_no}",
-                      f"{user.name or user.student_id} 上传了实物图，请在审核后发放奖励",
-                      link="/admin/pending")
+                      f"{user.name or user.student_id} 上传了 {len(saved)} 张实物图，请在审核后发放奖励",
+                      link=f"/application/{app_obj.id}")
         msg = "反馈已提交，等待管理员审核"
-        log_action(user.id, "feedback", f"订单 {app_obj.apply_no} 提交反馈（待审核）")
     else:
         app_obj.feedback_reviewed = True
         ensure_quota(user)
         user.remaining_quota += 1
+        app_obj.feedback_rewarded = True
         msg = "反馈成功，已奖励 1 次打印机会"
-        log_action(user.id, "feedback", f"订单 {app_obj.apply_no} 提交反馈，自动奖励 1 次打印机会")
+
+    log_action(user.id, "feedback",
+               f"订单 {app_obj.apply_no} 上传 {len(saved)} 张反馈图"
+               + ("（已过期，待管理员审核）" if expired and not already_rewarded else ""))
 
     try:
         db.session.commit()

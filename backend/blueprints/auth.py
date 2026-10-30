@@ -36,6 +36,43 @@ def captcha():
                "captcha_img": img_b64, "captcha_type": mime})
 
 
+@bp.route("/login-mode", methods=["GET"])
+def login_mode():
+    """登录页需要的公开信息：公共管理员账号名（用于前端切换登录方式）。"""
+    cfg = current_app.config
+    return ok({
+        "public_admin_username": cfg.get("PUBLIC_ADMIN_USERNAME") or "",
+        "cas_mock": bool(cfg.get("CAS_MOCK")),
+    })
+
+
+def _public_admin_login(username, password):
+    """公共管理员本地账号登录（不走教务系统）。
+
+    返回 (user, 错误信息)。账号名/密码来自配置 PUBLIC_ADMIN_USERNAME / PUBLIC_ADMIN_PASSWORD。
+    """
+    cfg = current_app.config
+    name = (cfg.get("PUBLIC_ADMIN_USERNAME") or "").strip()
+    pwd = cfg.get("PUBLIC_ADMIN_PASSWORD") or ""
+    if not name or username != name:
+        return None, None
+    if not pwd or password != pwd:
+        return None, "公共管理员账号或密码错误"
+
+    user = db.session.query(User).filter_by(student_id=name).first()
+    if user is None:
+        user = User(student_id=name, name="公共管理员", college="3D打印工作室")
+        db.session.add(user)
+        db.session.flush()
+    user.name = user.name or "公共管理员"
+    user.role = "admin"
+    user.is_shared_admin = True
+    ensure_quota(user)
+    log_action(user.id, "public_admin_login", "公共管理员账号登录")
+    db.session.commit()
+    return user, None
+
+
 @bp.route("/cas-login", methods=["POST"])
 def cas_login():
     """教务系统学号密码登录：校验 → 按学号查/建用户 → 返回正式 token。"""
@@ -47,6 +84,13 @@ def cas_login():
 
     if not student_id or not password:
         return fail("请输入学号和密码", code=1002)
+
+    # 公共管理员共用账号：本地校验，跳过教务系统与验证码
+    admin_user, admin_err = _public_admin_login(student_id, password)
+    if admin_err:
+        return fail(admin_err, code=1003)
+    if admin_user is not None:
+        return ok({"token": issue_token(admin_user), "user": admin_user.to_dict()}, msg="登录成功")
 
     # 先查本地用户，判断是否已缓存完整姓名+学院；有则本次登录只做密码校验，
     # 跳过教务系统个人信息抓取（减少对学校系统的访问，也规避其网络不稳定）

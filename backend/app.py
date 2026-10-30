@@ -39,7 +39,10 @@ FRONTEND_DIST = os.path.abspath(
 # 老库需要补的列：print_applications 新增字段（列名, 类型, MySQL 注释）
 # 顺序即执行顺序；已存在的列会被跳过，因此可重复执行。
 NEW_APPLICATION_COLUMNS = [
-    ("feedback_reviewed", "TINYINT(1) NULL", "反馈审核：None=无需审核 0=待审核 1=通过"),
+    ("feedback_reviewed", "TINYINT(1) NULL", "反馈审核：None=无需审核(auto模式) 0=待审核 1=通过"),
+    ("feedback_rewarded", "TINYINT(1) NOT NULL DEFAULT 0", "反馈奖励是否已发放（每单只发一次）"),
+    ("expected_feedback_at", "DATETIME NULL", "申请人自报的预计反馈时间"),
+    ("expected_feedback_note", "VARCHAR(255) NULL", "不按默认期限的原因说明"),
     ("reviewer_id", "INT NULL", "审批人 users.id"),
     ("reviewer_name", "VARCHAR(64) NULL", "审批人姓名快照"),
     ("reviewer_student_id", "VARCHAR(32) NULL", "审批人学号快照"),
@@ -61,28 +64,68 @@ NEW_APPLICATION_COLUMNS = [
     ("completed_auto", "TINYINT(1) NOT NULL DEFAULT 0", "是否由打印机进度自动标记完成"),
 ]
 
+# users 表的老库补列
+NEW_USER_COLUMNS = [
+    ("is_shared_admin", "TINYINT(1) NOT NULL DEFAULT 0",
+     "公共管理员共享账号：操作时需另行登记实际操作人"),
+]
+
+
+def _fix_legacy_notification_links():
+    """旧版通知的 link 是生成时写死的：存量「反馈待审核」通知都指向 /admin/pending。
+
+    按通知标题里的申请编号反查申请单，把链接改写为该申请的详情页（审核页）；
+    顺带给旧的新申请通知补上 cat=pending。启动时跑一次，幂等（改过的不再命中条件）。
+    """
+    from sqlalchemy import text
+
+    try:
+        res = db.session.execute(
+            text(
+                "UPDATE notifications n JOIN print_applications p "
+                "ON n.title LIKE CONCAT('%', p.apply_no) "
+                "SET n.link = CONCAT('/application/', p.id) "
+                "WHERE n.ntype = 'feedback' AND n.link = '/admin/pending'"
+            )
+        )
+        changed = res.rowcount or 0
+        db.session.execute(
+            text(
+                "UPDATE notifications SET link = '/admin/pending?cat=pending' "
+                "WHERE ntype = 'apply' AND link = '/admin/pending'"
+            )
+        )
+        db.session.commit()
+        if changed:
+            print(f"[MIGRATE] 已修正 {changed} 条旧反馈通知的跳转链接")
+    except Exception as e:
+        db.session.rollback()
+        print(f"[MIGRATE] 旧通知链接修复跳过：{e}")
+
 
 def _ensure_columns():
-    """老库自动补新增列（print_applications 的审批人/打印人/过期相关字段）。"""
+    """老库自动补新增列（print_applications 的审批人/打印人/过期相关字段 + users 的公共管理员标记）。"""
     from sqlalchemy import inspect, text
 
     insp = inspect(db.engine)
-    try:
-        cols = {c["name"] for c in insp.get_columns("print_applications")}
-    except Exception:
-        return  # 表还没建（create_all 之后不会出现，防御性返回）
 
-    missing = [(n, t, c) for n, t, c in NEW_APPLICATION_COLUMNS if n not in cols]
-    if not missing:
-        return
+    def _add_missing(table, columns):
+        try:
+            cols = {c["name"] for c in insp.get_columns(table)}
+        except Exception:
+            return False  # 表还没建（create_all 之后不会出现，防御性返回）
+        missing = [(n, t, c) for n, t, c in columns if n not in cols]
+        if not missing:
+            return False
+        for name, col_type, comment in missing:
+            ddl = f"ALTER TABLE {table} ADD COLUMN {name} {col_type}"
+            if db.engine.name == "mysql" and comment:
+                ddl += f" COMMENT '{comment}'"
+            db.session.execute(text(ddl))
+        return True
 
-    changed = False
-    for name, col_type, comment in missing:
-        ddl = f"ALTER TABLE print_applications ADD COLUMN {name} {col_type}"
-        if db.engine.name == "mysql" and comment:
-            ddl += f" COMMENT '{comment}'"
-        db.session.execute(text(ddl))
-        changed = True
+    changed = _add_missing("print_applications", NEW_APPLICATION_COLUMNS)
+    changed = _add_missing("users", NEW_USER_COLUMNS) or changed
     if changed:
         db.session.commit()
 
@@ -148,6 +191,8 @@ def create_app():
         db.create_all()
         # 已存在的表补缺失列（新增字段时老库自动迁移）
         _ensure_columns()
+        # 旧版通知的链接是「生成时写死」的：把存量反馈通知改指到申请详情页（一次性，幂等）
+        _fix_legacy_notification_links()
 
         # 启动拓竹打印机状态监视（有配置打印机时建立 MQTT 连接）
         from services import bambu
@@ -174,6 +219,7 @@ def create_app():
     from blueprints.notification import bp as notification_bp
     from blueprints.printer import bp as printer_bp
     from blueprints.app_release import bp as app_release_bp
+    from blueprints.native_sms import bp as native_sms_bp
 
     app.register_blueprint(auth_bp, url_prefix="/api/auth")
     app.register_blueprint(user_bp, url_prefix="/api/user")
@@ -185,6 +231,8 @@ def create_app():
     app.register_blueprint(printer_bp, url_prefix="/api/printer")
     app.register_blueprint(notification_bp, url_prefix="/api/notification")
     app.register_blueprint(app_release_bp, url_prefix="/api/app")
+    # 原生短信模块的极简 API（状态 / 收件箱 / 发送 / Webhook）
+    app.register_blueprint(native_sms_bp, url_prefix="/api/admin/native-sms")
 
     @app.route("/api/health")
     def health():
@@ -275,4 +323,11 @@ if __name__ == "__main__":
     if os.path.isfile(app.config["SSL_CERT"]) and os.path.isfile(app.config["SSL_KEY"]):
         _start_https(app)
 
-    app.run(host="0.0.0.0", port=5000, debug=debug, use_reloader=use_reloader)
+    # —— 内嵌 sms-hub 模式：交给 run_server（uvicorn 同时托管 Flask + sms-hub）——
+    # 这样只启动一个进程，同时服务 3D 打印平台与短信网关；未启用时保持原来的 Flask 启动方式。
+    if app.config.get("SMSHUB_EMBEDDED") and not debug:
+        print("[boot] SMSHUB_EMBEDDED=1 → 使用合并入口（Flask + sms-hub 单进程）", flush=True)
+        from run_server import main as run_merged
+        run_merged(flask_app=app)
+    else:
+        app.run(host="0.0.0.0", port=5000, debug=debug, use_reloader=use_reloader)

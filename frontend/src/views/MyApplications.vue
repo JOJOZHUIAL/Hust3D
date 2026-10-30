@@ -1,90 +1,92 @@
 <template>
   <div class="page list">
-    <van-nav-bar title="我的申请" left-arrow fixed placeholder @click-left="$router.back()" />
+    <van-pull-refresh v-model="refreshing" @refresh="onRefresh">
+      <van-nav-bar title="我的申请" left-arrow fixed placeholder @click-left="$router.back()" />
 
-    <van-tabs v-model:active="activeTab" sticky @change="onTabChange">
-      <van-tab v-for="t in TABS" :key="t.value" :title="t.label" :name="t.value" />
-    </van-tabs>
+      <van-tabs v-model:active="activeTab" sticky @change="onTabChange">
+        <van-tab v-for="t in TABS" :key="t.value" :title="t.label" :name="t.value" />
+      </van-tabs>
 
-    <!-- 日期筛选（chips 自动换行 + 日历范围） -->
-    <div class="date-filter">
-      <button
-        v-for="c in dateChips"
-        :key="c.key"
-        class="d-chip"
-        :class="{ active: dateMode === c.key }"
-        type="button"
-        @click="pickRange(c.key)"
-      >
-        {{ c.label }}
-      </button>
-      <button
-        class="d-chip"
-        :class="{ active: dateMode === 'custom' }"
-        type="button"
-        @click="calShow = true"
-      >
-        {{ customLabel }}
-      </button>
-    </div>
-
-    <div class="list-body">
-      <van-empty v-if="!loading && dateFiltered.length === 0" description="暂无申请记录" />
-      <!-- 每条申请一张圆角卡片 -->
-      <div v-else class="app-list">
-        <van-cell
-          v-for="item in dateFiltered"
-          :key="item.id"
-          class="app-card"
-          :title="item.apply_no"
-          :label="`${PURPOSE_TEXT[item.purpose] || item.purpose} · ${item.created_at}`"
-          is-link
-          @click="$router.push(`/application/${item.id}`)"
+      <!-- 日期筛选（chips 自动换行 + 日历范围） -->
+      <div class="date-filter">
+        <button
+          v-for="c in dateChips"
+          :key="c.key"
+          class="d-chip"
+          :class="{ active: dateMode === c.key }"
+          type="button"
+          @click="pickRange(c.key)"
         >
-          <template #value>
-            <van-tag round :color="STATUS[item.status]?.color">{{ STATUS[item.status]?.text }}</van-tag>
-            <van-tag round v-if="item.feedback_url && item.feedback_reviewed === false" color="#ffd21e">反馈审核中</van-tag>
-            <van-tag round v-else-if="item.feedback_url && item.feedback_reviewed !== 2" color="#07c160">已反馈</van-tag>
-            <van-tag round v-else-if="item.expired" color="#969799">已过期</van-tag>
-            <van-tag round v-else-if="item.status === 'completed'" color="#ff976a">未反馈</van-tag>
-          </template>
-          <template #right-icon>
-            <!-- 待审批且未进入审批流程：可撤回（彻底删除并返还打印次数） -->
-            <van-button
-              v-if="item.can_withdraw"
-              size="mini"
-              plain
-              round
-              type="danger"
-              style="margin-right: 6px"
-              @click.stop="onWithdraw(item)"
-            >
-              撤回
-            </van-button>
-            <!-- 自定义 right-icon 会覆盖默认箭头，这里补回来保持列表观感一致 -->
-            <van-icon name="arrow" class="van-cell__right-icon" />
-          </template>
-        </van-cell>
+          {{ c.label }}
+        </button>
+        <button
+          class="d-chip"
+          :class="{ active: dateMode === 'custom' }"
+          type="button"
+          @click="calShow = true"
+        >
+          {{ customLabel }}
+        </button>
       </div>
-    </div>
 
-    <TabBar />
+      <div class="list-body">
+        <van-empty v-if="!loading && dateFiltered.length === 0" description="暂无申请记录" />
+        <!-- 每条申请一张圆角卡片 -->
+        <div v-else class="app-list">
+          <van-cell
+            v-for="item in dateFiltered"
+            :key="item.id"
+            class="app-card"
+            :title="item.apply_no"
+            :label="`${PURPOSE_TEXT[item.purpose] || item.purpose} · ${item.created_at}`"
+            is-link
+            @click="$router.push(`/application/${item.id}`)"
+          >
+            <template #value>
+              <van-tag round :color="STATUS[item.status]?.color">{{ STATUS[item.status]?.text }}</van-tag>
+              <van-tag round v-if="item.feedback_url && item.feedback_reviewed === false" color="#ffd21e">反馈审核中</van-tag>
+              <van-tag round v-else-if="item.feedback_url && item.feedback_reviewed !== 2" color="#07c160">已反馈</van-tag>
+              <van-tag round v-else-if="item.expired" color="#969799">已过期</van-tag>
+              <van-tag round v-else-if="item.status === 'completed'" color="#ff976a">未反馈</van-tag>
+            </template>
+            <template #right-icon>
+              <!-- 待审批且未进入审批流程：可撤回（彻底删除并返还打印次数） -->
+              <van-button
+                v-if="item.can_withdraw"
+                size="mini"
+                plain
+                round
+                type="danger"
+                style="margin-right: 6px"
+                @click.stop="onWithdraw(item)"
+              >
+                撤回
+              </van-button>
+              <!-- 自定义 right-icon 会覆盖默认箭头，这里补回来保持列表观感一致 -->
+              <van-icon name="arrow" class="van-cell__right-icon" />
+            </template>
+          </van-cell>
+        </div>
+      </div>
 
-    <!-- 自定义日期范围 -->
-    <van-calendar
-      v-model:show="calShow"
-      type="range"
-      allow-same-day
-      title="选择日期范围"
-      :min-date="calMinDate"
-      :max-date="calMaxDate"
-      @confirm="onCalConfirm"
-    />
+      <TabBar />
+
+      <!-- 自定义日期范围 -->
+      <van-calendar
+        v-model:show="calShow"
+        type="range"
+        allow-same-day
+        title="选择日期范围"
+        :min-date="calMinDate"
+        :max-date="calMaxDate"
+        @confirm="onCalConfirm"
+      />
+    </van-pull-refresh>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onActivated } from 'vue'
 import { showConfirmDialog, showSuccessToast } from 'vant'
 import { getMyApplications, withdrawApplication } from '../api/application'
 import TabBar from '../components/TabBar.vue'
@@ -209,6 +211,15 @@ function onTabChange() {
 }
 
 onMounted(load)
+// keep-alive 缓存页：切回时刷新列表
+onActivated(load)
+
+// —— App 下拉刷新（原生 App 内由 Capacitor 提供触摸滚动，网页同理）——
+const refreshing = ref(false)
+async function onRefresh() {
+  await load()
+  refreshing.value = false
+}
 </script>
 
 <style scoped>

@@ -179,7 +179,7 @@ def main():
     r = c.post(f"/api/application/feedback/{app_id}", headers=headers,
                data={"file": (io.BytesIO(b"x"), "again.png")},
                content_type="multipart/form-data")
-    check("重复反馈被拦截", r.get_json().get("code") == 1002, r.get_json())
+    check("重复反馈改为追加图片（不再拦截）", r.get_json().get("code") == 0, r.get_json())
 
     # 7.9 联系工作室（聊天）：学生发文字/文件 → 管理员回复 → 已读流转
     r = c.post("/api/auth/cas-login", json={"student_id": "20260002", "password": "x"})
@@ -656,12 +656,78 @@ def main():
     check("超过 7 天未反馈标记为已过期",
           (target or {}).get("expired") is True and bool((target or {}).get("expired_at")), target)
     check("过期后状态仍为已完成", (target or {}).get("status") == "completed", (target or {}).get("status"))
-    check("过期后不可再反馈", (target or {}).get("can_feedback") is False, target)
+    check("过期后仍可补交反馈", (target or {}).get("can_feedback") is True, target)
 
+    # —— 需求：过期也能上传；仍需要审核；可多张、可重复上传（审核通过也不发奖励）——
+    with app.app_context():
+        quota_before = db.session.get(PrintApplication, pr_id).user.remaining_quota
     r = c.post(f"/api/application/feedback/{pr_id}", headers=stu_headers,
                data={"file": (io.BytesIO(b"late feedback"), "late.png")},
                content_type="multipart/form-data")
-    check("过期申请反馈被拦截", r.get_json().get("code") == 1002, r.get_json())
+    check("过期申请可上传反馈", r.get_json().get("code") == 0, r.get_json())
+    dl = (r.get_json().get("data") or {})
+    check("过期反馈仍需要审核", dl.get("feedback_reviewed") in (False, 0), dl.get("feedback_reviewed"))
+    check("过期反馈未发奖励", dl.get("feedback_rewarded") is False, dl.get("feedback_rewarded"))
+    check("反馈图片记入列表", len(dl.get("feedback_images") or []) == 1, dl.get("feedback_images"))
+    with app.app_context():
+        quota_after = db.session.get(PrintApplication, pr_id).user.remaining_quota
+    check("过期反馈不增加打印次数", quota_after == quota_before, (quota_before, quota_after))
+
+    # 管理员审核通过过期补交的反馈 → 状态通过但不加次数
+    r = c.post("/api/admin/feedback/review", headers=headers,
+               json={"id": pr_id, "action": "approve", "reward": 5})
+    j = r.get_json() or {}
+    check("过期反馈可被管理员通过", j.get("code") == 0, j)
+    check("过期反馈通过后提示不发放奖励", "不发放奖励" in (j.get("msg") or ""), j.get("msg"))
+    with app.app_context():
+        row = db.session.get(PrintApplication, pr_id)
+        quota_after2 = row.user.remaining_quota
+        reviewed = row.feedback_reviewed
+    check("过期反馈通过后状态为已通过", reviewed in (True, 1), reviewed)
+    check("过期反馈通过后仍不加打印次数", quota_after2 == quota_before, (quota_before, quota_after2))
+
+    # 再传一次（已通过、已有反馈）
+    r = c.post(f"/api/application/feedback/{pr_id}", headers=stu_headers,
+               data={"file": [(io.BytesIO(b"again 1"), "a1.png"),
+                              (io.BytesIO(b"again 2"), "a2.png")]},
+               content_type="multipart/form-data")
+    check("不满意可再次上传", r.get_json().get("code") == 0, r.get_json())
+    dl2 = (r.get_json().get("data") or {})
+    check("再次上传后图片累加到 3 张", len(dl2.get("feedback_images") or []) == 3,
+          len(dl2.get("feedback_images") or []))
+    check("再次上传仍不发奖励", dl2.get("feedback_rewarded") is False, dl2.get("feedback_rewarded"))
+
+    with app.app_context():
+        from models import FeedbackImage as _FI
+        cnt = _FI.query.filter_by(application_id=pr_id).count()
+    check("反馈图片落库 3 条", cnt == 3, cnt)
+
+    # 再传一份，确认配额不会被反复加
+    before_q = quota_before
+    c.post(f"/api/application/feedback/{pr_id}", headers=stu_headers,
+           data={"file": (io.BytesIO(b"third"), "b.png")},
+           content_type="multipart/form-data")
+    with app.app_context():
+        after_q = db.session.get(PrintApplication, pr_id).user.remaining_quota
+    check("多次上传不会重复加打印次数", after_q == before_q, (before_q, after_q))
+
+    r = c.post(f"/api/application/feedback/{pr_id}", headers=stu_headers,
+               data={}, content_type="multipart/form-data")
+    check("没选图片时提示并拒绝", r.get_json().get("code") == 1002, r.get_json())
+
+    # 上面这些反馈用例会改到该申请（已领取 + 已有反馈），这里恢复成
+    # 「已过期、未领取、未反馈」的状态，供后面「首页待完成」用例使用
+    with app.app_context():
+        from models import FeedbackImage as _FIC
+        row = db.session.get(PrintApplication, pr_id)
+        row.picked_up = False
+        row.pick_up_date = None
+        row.feedback_url = None
+        row.feedback_at = None
+        row.feedback_reviewed = None
+        row.feedback_rewarded = False
+        _FIC.query.filter_by(application_id=pr_id).delete()
+        db.session.commit()
 
     r = c.get("/api/admin/applications?status=expired", headers=headers)
     check("审批管理「已过期」分组可查询",
@@ -672,6 +738,97 @@ def main():
     r = c.get("/api/application/list?status=expired", headers=stu_headers)
     check("学生端「已过期」筛选可查",
           any(x["id"] == pr_id for x in ((r.get_json() or {}).get("data") or [])), None)
+
+    # —— 预计反馈时间：申请表单新增字段 ——
+    r = c.get("/api/application/meta", headers=stu_headers)
+    mt = (r.get_json() or {}).get("data") or {}
+    check("表单 meta 返回反馈期限", mt.get("feedback_expire_days") == 7, mt)
+
+    from datetime import date as _date, timedelta as _td2
+    soon = (_date.today() + _td2(days=3)).isoformat()
+    topup_quota("20260002", 1)
+    r = c.post("/api/application/submit", headers=stu_headers,
+               data=make_data(expected_feedback_at=soon), content_type="multipart/form-data")
+    check("指定预计反馈时间必须说明情况", r.get_json().get("code") == 1002, r.get_json())
+
+    topup_quota("20260002", 1)
+    r = c.post("/api/application/submit", headers=stu_headers,
+               data=make_data(expected_feedback_at=soon, expected_feedback_note="   "),
+               content_type="multipart/form-data")
+    check("空白说明也会被拒绝", r.get_json().get("code") == 1002, r.get_json())
+
+    topup_quota("20260002", 1)
+    r = c.post("/api/application/submit", headers=stu_headers,
+               data=make_data(expected_feedback_at=soon,
+                              expected_feedback_note="参加省赛，10 月 20 日赛后才能拍摄实物图"),
+               content_type="multipart/form-data")
+    edf_app = (r.get_json() or {}).get("data") or {}
+    check("可提交预计反馈时间 + 说明", r.get_json().get("code") == 0, r.get_json())
+    check("预计反馈时间已保存",
+          (edf_app.get("expected_feedback_at") or "").startswith(soon), edf_app.get("expected_feedback_at"))
+    check("情况说明已保存", "省赛" in (edf_app.get("expected_feedback_note") or ""),
+          edf_app.get("expected_feedback_note"))
+
+    # 不填时间：不需要说明
+    topup_quota("20260002", 1)
+    r = c.post("/api/application/submit", headers=stu_headers,
+               data=make_data(), content_type="multipart/form-data")
+    plain = (r.get_json() or {}).get("data") or {}
+    check("不指定时间无需说明", r.get_json().get("code") == 0, r.get_json())
+    check("默认期限时预计反馈时间为空", plain.get("expected_feedback_at") is None, plain.get("expected_feedback_at"))
+    c.post(f"/api/application/withdraw/{plain.get('id')}", headers=stu_headers)
+
+    past = (_date.today() - _td2(days=1)).isoformat()
+    topup_quota("20260002", 1)
+    r = c.post("/api/application/submit", headers=stu_headers,
+               data=make_data(expected_feedback_at=past, expected_feedback_note="昨天"),
+               content_type="multipart/form-data")
+    check("预计反馈时间不能早于今天", r.get_json().get("code") == 1002, r.get_json())
+    topup_quota("20260002", 1)
+    r = c.post("/api/application/submit", headers=stu_headers,
+               data=make_data(expected_feedback_at="2026-13-45", expected_feedback_note="格式错"),
+               content_type="multipart/form-data")
+    check("预计反馈时间格式校验", r.get_json().get("code") == 1002, r.get_json())
+    topup_quota("20260002", 1)
+    r = c.post("/api/application/submit", headers=stu_headers,
+               data=make_data(expected_feedback_at=soon, expected_feedback_note="x" * 201),
+               content_type="multipart/form-data")
+    check("情况说明长度校验", r.get_json().get("code") == 1002, r.get_json())
+
+    # 收尾：撤回这条测试申请，避免影响后面的待办清单
+    c.post(f"/api/application/withdraw/{edf_app.get('id')}", headers=stu_headers)
+
+    # —— 改 .env 的 FEEDBACK_EXPIRE_DAYS 后重启，过期标记要按新天数重新判定 ——
+    from services.expiry import expire_stale_silently as _sweep
+    old_days = app.config.get("FEEDBACK_EXPIRE_DAYS")
+    try:
+        app.config["FEEDBACK_EXPIRE_DAYS"] = 30  # 期限放宽到 30 天
+        with app.app_context():
+            _sweep()
+            row = db.session.get(PrintApplication, pr_id)
+            revived = row.expired_at
+        check("期限放宽后已过期标记会被撤销", revived is None, revived)
+
+        app.config["FEEDBACK_EXPIRE_DAYS"] = 7  # 改回 7 天
+        with app.app_context():
+            _sweep()
+            row = db.session.get(PrintApplication, pr_id)
+            again = row.expired_at
+        check("期限改回后重新标记为过期", again is not None, again)
+
+        app.config["FEEDBACK_EXPIRE_DAYS"] = 0  # 0 = 关闭过期机制
+        with app.app_context():
+            _sweep()
+            row = db.session.get(PrintApplication, pr_id)
+            off = row.expired_at
+        check("关闭过期机制后不再标记", off is None, off)
+    finally:
+        app.config["FEEDBACK_EXPIRE_DAYS"] = old_days
+        with app.app_context():
+            _sweep()
+        r = c.get("/api/application/list?status=expired", headers=stu_headers)
+        check("恢复配置后过期标记回来",
+              any(x["id"] == pr_id for x in ((r.get_json() or {}).get("data") or [])), None)
 
     # 7.20 打印机绑定 + 进度 100% 自动完成（用假 MQTT 快照模拟，无需真机）
     import services.bambu as bambu_mod
@@ -940,9 +1097,10 @@ def main():
     check("待完成清单可拉取", td.get("count") == len(items), td.get("count"))
     check("待完成含待取件", ("pickup", sp["apply_no"]) in kinds, sorted(kinds))
     check("待完成含待反馈", ("feedback", sp["apply_no"]) in kinds, sorted(kinds))
-    check("已过期申请只催取件、不催反馈",
-          ("pickup", pr["apply_no"]) in kinds and ("feedback", pr["apply_no"]) not in kinds,
-          sorted(kinds))
+    check("已过期申请也出现在待反馈里",
+          ("feedback", pr["apply_no"]) in kinds, sorted(kinds))
+    check("已过期申请仍催取件",
+          ("pickup", pr["apply_no"]) in kinds, sorted(kinds))
 
     # 「上传反馈图」→ 这条待反馈消失，待取件仍在
     r = c.post(f"/api/application/feedback/{sp_id}", headers=stu_headers,
@@ -1036,6 +1194,7 @@ def main():
     cfg = app.config
     saved = {k: cfg.get(k) for k in (
         "SMS_ENABLED", "SMS_GATEWAY_URL", "SMS_GATEWAY_URLS", "SMS_GATEWAY_METHOD", "ENV_FILE",
+        "NOTIFY_SMS_TEMPLATE", "NOTIFY_EMAIL_SUBJECT", "NOTIFY_EMAIL_TEMPLATE",
         "SMS_GATEWAY_TOKEN", "SMS_TEMPLATE", "SMS_PROVIDER", "SMS_JSON_TEMPLATE",
     )}
 
@@ -1101,6 +1260,42 @@ def main():
               sent_calls[0][1].get("headers"))
         cfg["SMS_PROVIDER"] = "template"
 
+        # 7.25 反馈提醒短信（未反馈 / 已过期的申请，管理员手动按钮）
+        from models import SmsMessage as _SM
+
+        sms_mod._http_get = _fake_get  # 上个用例把桩换成了 500，这里恢复成功响应
+        sms_mod._http_post = _fake_get
+        _set_gateways("http://sms.local:8080/send_sms?token={token}&phone={phone}&msg={msg}")
+        with app.app_context():
+            row = db.session.get(PrintApplication, mp["id"])
+            row.feedback_url = None
+            row.feedback_at = None
+            row.feedback_reviewed = None
+            db.session.commit()
+        sent_calls.clear()
+        r = c.post(f"/api/admin/application/remind-feedback/{mp['id']}", headers=headers)
+        check("反馈提醒短信发送成功", r.get_json().get("code") == 0, r.get_json())
+        remind_url = sent_calls[0][0] if sent_calls else ""
+        check("反馈提醒含申请编号", mp["apply_no"] in remind_url, remind_url)
+        remind_data = (r.get_json().get("data") or {})
+        check("反馈提醒正文含反馈字样", "反馈" in (remind_data.get("content") or ""), remind_data)
+        remind_id = (r.get_json().get("data") or {}).get("sms_id")
+        with app.app_context():
+            check("反馈提醒记录类型为 feedback_remind",
+                  db.session.get(_SM, remind_id).kind == "feedback_remind", remind_id)
+        # 已提交反馈后不可再提醒
+        with app.app_context():
+            row = db.session.get(PrintApplication, mp["id"])
+            row.feedback_url = "uploads/feedback/fake.png"
+            db.session.commit()
+        r = c.post(f"/api/admin/application/remind-feedback/{mp['id']}", headers=headers)
+        check("已反馈后拒绝再提醒", r.get_json().get("code") == 1002, r.get_json())
+        # 恢复现场（后续用例可能依赖 mp 无反馈状态）
+        with app.app_context():
+            row = db.session.get(PrintApplication, mp["id"])
+            row.feedback_url = None
+            db.session.commit()
+
         # 测试接口
         sms_mod._http_get = lambda url, **kw: _FakeResp(200)
         sms_mod._http_post = sms_mod._http_get
@@ -1160,6 +1355,61 @@ def main():
         check("状态接口标记窗口不可达",
               all(g.get("reachable") is False for g in (st.get("gateways") or [])), st.get("gateways"))
         _set_gateways("http://192.168.1.129:5000/sms/send")
+
+        # —— sms-hub 通道（ESP32C3 + 4G 模组网关）——
+        import services.sms_hub as hub_mod
+        hub_calls = []
+        real_send = hub_mod.send_text
+
+        def _fake_hub_send(phone, text, retries=None):
+            hub_calls.append((phone, text))
+            if phone == "13900000099":
+                raise hub_mod.SmsHubError("网关不可达（ConnectionError）", retryable=True)
+            return {"ok": True, "id": 42, "parts": 1, "sim_id": "sim_test"}
+
+        cfg["SMS_PROVIDER"] = "smshub"
+        cfg["SMSHUB_BASE_URL"] = "http://192.168.1.150:8025"
+        cfg["SMSHUB_PASSWORD"] = "hust3d123456"
+        hub_mod.send_text = _fake_hub_send
+        try:
+            hub_calls.clear()
+            r = c.post("/api/admin/sms/send", headers=headers,
+                       json={"phone": "13900000011", "content": "sms-hub 通道测试"})
+            check("sms-hub 通道发送成功", r.get_json().get("code") == 0, r.get_json())
+            check("sms-hub 收到手机号与正文",
+                  hub_calls and hub_calls[0][0] == "13900000011" and "sms-hub" in hub_calls[0][1],
+                  hub_calls)
+            check("发送记录写明 sms-hub",
+                  "sms-hub" in ((r.get_json().get("data") or {}).get("gateway") or ""),
+                  (r.get_json().get("data") or {}).get("gateway"))
+            check("sms-hub 发送后记录为已发送",
+                  (r.get_json().get("data") or {}).get("status") == "sent",
+                  (r.get_json().get("data") or {}).get("status"))
+
+            # 不可达 → 入队重试
+            r = c.post("/api/admin/sms/send", headers=headers,
+                       json={"phone": "13900000099", "content": "sms-hub 离线测试"})
+            j = r.get_json() or {}
+            check("sms-hub 不可达时入队", j.get("code") == 0 and
+                  (j.get("data") or {}).get("status") == "pending", j)
+
+            # 校验收件人手机号
+            r = c.post("/api/admin/sms/send", headers=headers,
+                       json={"phone": "123", "content": "x"})
+            check("sms-hub 通道仍校验手机号", r.get_json().get("code") == 1002, r.get_json())
+
+            # 状态接口走 /api/health 探测
+            real_probe = hub_mod.probe
+            hub_mod.probe = lambda timeout=3: True
+            r = c.get("/api/admin/sms/status", headers=headers)
+            st = (r.get_json() or {}).get("data") or {}
+            check("sms-hub 状态显示在线",
+                  st.get("reachable") is True and any("8025" in (g.get("url") or "")
+                                                      for g in (st.get("gateways") or [])), st)
+            hub_mod.probe = real_probe
+        finally:
+            hub_mod.send_text = real_send
+            cfg["SMS_PROVIDER"] = "template"
 
         # —— 监听窗口的增删（管理端 + 号）——
         import tempfile
@@ -1370,6 +1620,355 @@ def main():
     r = c.put("/api/admin/application/status", headers=headers, json={"id": fid, "status": "printing"})
     r = c.put("/api/admin/application/status", headers=headers, json={"id": fid, "status": "completed"})
     check("完成状态流转正常（邮件静默）", r.get_json().get("code") == 0, r.get_json())
+
+    # —— 公共管理员账号（admin 共享号）——
+    cfg = app.config
+    cfg["PUBLIC_ADMIN_USERNAME"] = "admin"
+    cfg["PUBLIC_ADMIN_PASSWORD"] = "hust3d123456"
+
+    r = c.get("/api/auth/login-mode")
+    check("登录模式接口返回公共管理员账号",
+          (r.get_json() or {}).get("data", {}).get("public_admin_username") == "admin", r.get_json())
+
+    r = c.post("/api/auth/cas-login", json={"student_id": "admin", "password": "wrong-pwd"})
+    check("公共管理员密码错误被拒", r.get_json().get("code") == 1003, r.get_json())
+
+    r = c.post("/api/auth/cas-login", json={"student_id": "admin", "password": "hust3d123456"})
+    pj = r.get_json() or {}
+    check("公共管理员登录成功（无需验证码）", pj.get("code") == 0, pj)
+    pdata = pj.get("data") or {}
+    shared_headers = {"Authorization": "Bearer " + (pdata.get("token") or "")}
+    check("公共管理员角色为 admin", (pdata.get("user") or {}).get("role") == "admin", pdata.get("user"))
+    check("公共管理员带共享标记", (pdata.get("user") or {}).get("is_shared_admin") is True, pdata.get("user"))
+
+    # 拉一个待审批申请
+    topup_quota("20260002", 1)
+    pa = submit_as(stu_headers, purpose="course")
+
+    r = c.post("/api/admin/application/review", headers=shared_headers,
+               json={"id": pa["id"], "action": "approve"})
+    check("公共管理员审批必须填操作人学号", r.get_json().get("code") == 1002, r.get_json())
+    r = c.post("/api/admin/application/review", headers=shared_headers,
+               json={"id": pa["id"], "action": "approve", "operator_student_id": "9999999999"})
+    check("操作人学号不存在时被拒", r.get_json().get("code") == 1002, r.get_json())
+
+    r = c.post("/api/admin/application/review", headers=shared_headers,
+               json={"id": pa["id"], "action": "approve", "operator_student_id": "20260001"})
+    check("公共管理员审批成功", r.get_json().get("code") == 0, r.get_json())
+    d = detail_of(pa["id"])
+    check("审批人记录为填写的学号本人",
+          (d.get("reviewer") or {}).get("student_id") == "20260001", d.get("reviewer"))
+
+    # 开始打印也要登记操作人
+    r = c.put("/api/admin/application/status", headers=shared_headers,
+              json={"id": pa["id"], "status": "printing"})
+    check("公共管理员开始打印必须填操作人", r.get_json().get("code") == 1002, r.get_json())
+    r = c.put("/api/admin/application/status", headers=shared_headers,
+              json={"id": pa["id"], "status": "printing", "operator_student_id": "20260001"})
+    check("公共管理员开始打印成功", r.get_json().get("code") == 0, r.get_json())
+    d = detail_of(pa["id"])
+    check("打印人记录为填写的学号本人",
+          (d.get("printed_by") or {}).get("student_id") == "20260001", d.get("printed_by"))
+
+    # 拆封耗材也要登记操作人
+    r = c.post("/api/consumable/stock-in", headers=headers,
+               json={"barcode": "SMOKE-PUB-1", "name": "公共账号测试耗材", "quantity": 2, "unit": "卷"})
+    check("公共账号用例：耗材入库", r.get_json().get("code") == 0, r.get_json())
+    r = c.post("/api/consumable/open", headers=shared_headers, json={"barcode": "SMOKE-PUB-1"})
+    check("公共管理员拆封必须填操作人", r.get_json().get("code") == 1002, r.get_json())
+    r = c.post("/api/consumable/open", headers=shared_headers,
+               json={"barcode": "SMOKE-PUB-1", "operator_student_id": "20260001"})
+    check("公共管理员拆封成功", r.get_json().get("code") == 0, r.get_json())
+    with app.app_context():
+        from models import ConsumableLog as _CL
+        op_row = _CL.query.order_by(_CL.id.desc()).first()
+        op_sid = op_row.operator.student_id if op_row and op_row.operator else None
+    check("拆封人记录为填写的学号本人", op_sid == "20260001", op_sid)
+
+    # 反馈审核也要登记操作人（需要 review 模式，否则提交即自动通过）
+    _mode_bak = cfg.get("FEEDBACK_REWARD_MODE")
+    cfg["FEEDBACK_REWARD_MODE"] = "review"
+    topup_quota("20260002", 1)
+    fb_app = submit_as(stu_headers, purpose="course")
+    c.post("/api/admin/application/review", headers=headers,
+           json={"id": fb_app["id"], "action": "approve"})
+    c.put("/api/admin/application/status", headers=headers,
+          json={"id": fb_app["id"], "status": "printing"})
+    c.put("/api/admin/application/status", headers=headers,
+          json={"id": fb_app["id"], "status": "completed"})
+    c.post(f"/api/application/feedback/{fb_app['id']}", headers=stu_headers,
+           data={"file": (io.BytesIO(b"fb"), "fb.png")}, content_type="multipart/form-data")
+    r = c.post("/api/admin/feedback/review", headers=shared_headers,
+               json={"id": fb_app["id"], "action": "approve", "reward": 1})
+    check("公共管理员审核反馈必须填操作人", r.get_json().get("code") == 1002, r.get_json())
+    r = c.post("/api/admin/feedback/review", headers=shared_headers,
+               json={"id": fb_app["id"], "action": "approve", "reward": 1,
+                     "operator_student_id": "20260001"})
+    check("公共管理员审核反馈成功", r.get_json().get("code") == 0, r.get_json())
+    cfg["FEEDBACK_REWARD_MODE"] = _mode_bak
+
+    # 打印失败也要登记操作人
+    topup_quota("20260002", 1)
+    fl = submit_as(stu_headers, purpose="course")
+    c.post("/api/admin/application/review", headers=headers,
+           json={"id": fl["id"], "action": "approve"})
+    r = c.put("/api/admin/application/status", headers=shared_headers,
+              json={"id": fl["id"], "status": "failed", "reason": "模型破损"})
+    check("公共管理员标记打印失败必须填操作人", r.get_json().get("code") == 1002, r.get_json())
+    r = c.put("/api/admin/application/status", headers=shared_headers,
+              json={"id": fl["id"], "status": "failed", "reason": "模型破损",
+                    "operator_student_id": "20260001"})
+    check("公共管理员标记打印失败成功", r.get_json().get("code") == 0, r.get_json())
+
+    # 标记完成不强制填操作人，避免过度打扰
+    topup_quota("20260002", 1)
+    ok_app = submit_as(stu_headers, purpose="course")
+    c.post("/api/admin/application/review", headers=headers,
+           json={"id": ok_app["id"], "action": "approve"})
+    c.put("/api/admin/application/status", headers=headers,
+          json={"id": ok_app["id"], "status": "printing"})
+    r = c.put("/api/admin/application/status", headers=shared_headers,
+              json={"id": ok_app["id"], "status": "completed"})
+    check("公共管理员标记完成不强制填操作人", r.get_json().get("code") == 0, r.get_json())
+
+    # 普通管理员不受影响（不需要填操作人）
+    topup_quota("20260002", 1)
+    na = submit_as(stu_headers, purpose="course")
+    r = c.post("/api/admin/application/review", headers=headers,
+               json={"id": na["id"], "action": "approve"})
+    check("普通管理员审批无需操作人学号", r.get_json().get("code") == 0, r.get_json())
+
+    # —— 原生短信模块（直接读 sms.db + 内部发送；替代 sms-hub 的整套 API/React UI）——
+    import sqlite3 as _sql
+    import json as _json
+    import services.native_sms as nsms
+
+    # 注意：必须用独立临时库，绝不能碰 instance/smshub/sms.db（那是生产短信库）
+    sms_dir = os.path.join(tempfile.gettempdir(), "smoke_smshub")
+    os.makedirs(sms_dir, exist_ok=True)
+    sms_db = os.path.join(sms_dir, "sms.db")
+    if os.path.isfile(sms_db):
+        os.remove(sms_db)
+    cfg["SMSHUB_DATA_DIR"] = sms_dir
+    con = _sql.connect(sms_db)
+    con.executescript("""
+        CREATE TABLE IF NOT EXISTS messages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, sim_id TEXT DEFAULT '', device_mac TEXT DEFAULT '',
+          device_msg_id INTEGER, gw_epoch INTEGER, sender TEXT, text TEXT, scts TEXT,
+          received_at TEXT, code TEXT, complete INTEGER, truncated INTEGER,
+          blocked INTEGER, content_type TEXT, mms_url TEXT, mms_size INTEGER, created_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS devices (
+          mac TEXT PRIMARY KEY, name TEXT, enabled INTEGER, base_url TEXT, current_sim_id TEXT,
+          cursor INTEGER, gw_epoch INTEGER, heartbeat_interval_s INTEGER,
+          last_hook_ts REAL, last_poll_ok_ts REAL, last_status_ts REAL, last_status_json TEXT,
+          created_at TEXT, updated_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS sims (
+          sim_id TEXT PRIMARY KEY, name TEXT, enabled INTEGER, current_device_mac TEXT,
+          identity_source TEXT, imsi_hash TEXT, imsi_tail TEXT, iccid_tail TEXT,
+          msisdn TEXT, operator TEXT, created_at TEXT, updated_at TEXT
+        );
+    """)
+    import time as _time
+    now_ts = _time.time()
+    con.execute("DELETE FROM messages")
+    con.execute("DELETE FROM devices")
+    con.execute("DELETE FROM sims")
+    con.execute(
+        "INSERT INTO sims (sim_id, enabled, current_device_mac, msisdn, operator) VALUES (?,?,?,?,?)",
+        ("sim_test", 1, "aabbccddeeff", "+8613800138000", "CHINA MOBILE"),
+    )
+    con.execute(
+        "INSERT INTO devices (mac, enabled, current_sim_id, heartbeat_interval_s,"
+        " last_hook_ts, last_poll_ok_ts, last_status_json) VALUES (?,?,?,?,?,?,?)",
+        ("aabbccddeeff", 1, "sim_test", 60, now_ts, now_ts,
+         _json.dumps({"modem": {"csq_dbm": -70, "operator": "CHINA MOBILE"}})),
+    )
+    con.execute(
+        "INSERT INTO messages (sim_id, sender, text, received_at, content_type, blocked) VALUES (?,?,?,?,?,?)",
+        ("sim_test", "10690001", "【某平台】您的验证码是 483920，5分钟内有效。", "2026-10-26 21:00:00", "sms", 0),
+    )
+    con.execute(
+        "INSERT INTO messages (sim_id, sender, text, received_at, content_type, blocked) VALUES (?,?,?,?,?,?)",
+        ("sim_test", "10086", "您本月已使用流量 3.2GB。", "2026-10-26 20:00:00", "sms", 0),
+    )
+    # 带国家码的号码：应能通过归一化匹配到平台用户姓名
+    con.execute(
+        "INSERT INTO messages (sim_id, sender, text, received_at, content_type, blocked) VALUES (?,?,?,?,?,?)",
+        ("sim_test", "+8613800000000", "带国家码的号码测试", "2026-10-26 22:00:00", "sms", 0),
+    )
+    con.commit()
+    con.close()
+
+    cfg["NATIVE_SMS_WEBHOOK"] = ""
+
+    r = c.get("/api/admin/native-sms/status", headers=headers)
+    st = (r.get_json() or {}).get("data") or {}
+    check("原生短信：状态接口可用", r.get_json().get("code") == 0, r.get_json())
+    check("原生短信：设备在线", st.get("online") is True, st)
+    check("原生短信：信号格数正确", st.get("signal") == 3, st.get("signal"))
+    check("原生短信：显示 SIM 号码", st.get("sim_number") == "138 0013 8000", st.get("sim_number"))
+    check("消息通知：自动识别卡列表",
+          any(x.get("online") for x in (st.get("sims") or [])), st.get("sims"))
+    check("消息通知：卡列表带号码与在用状态",
+          all(k in (st.get("sims") or [{}])[0] for k in ("number", "operator", "online")),
+          st.get("sims"))
+
+    r = c.get("/api/admin/native-sms/messages?limit=10", headers=headers)
+    md = (r.get_json() or {}).get("data") or {}
+    check("原生短信：收件箱可读", md.get("total") == 3, md.get("total"))
+    check("原生短信：按时间倒序",
+          [x["id"] for x in (md.get("items") or [])] == sorted(
+              [x["id"] for x in (md.get("items") or [])], reverse=True), md.get("items"))
+    by_sender = {x["sender"]: x for x in (md.get("items") or [])}
+    check("收件：号码带 +86 也能匹配到姓名",
+          bool((by_sender.get("+8613800000000") or {}).get("alias")),
+          by_sender.get("+8613800000000"))
+    check("收件：未知号码姓名为空",
+          (by_sender.get("10086") or {}).get("alias") == "", by_sender.get("10086"))
+    check("原生短信：自动提取验证码",
+          (by_sender.get("10690001") or {}).get("code") == "483920", by_sender.get("10690001"))
+    check("原生短信：无验证码时为空",
+          (by_sender.get("10086") or {}).get("code") == "", by_sender.get("10086"))
+
+    # 发送：走内部函数（不经过 sms-hub 的 HTTP API）
+    sent = []
+
+    def _fake_send(phone, text, retries=None):
+        sent.append((phone, text))
+        return {"ok": True, "id": 99, "parts": 1}
+
+    import services.sms_hub as _smt
+    real_send_text = _smt.send_text
+    _smt.send_text = _fake_send
+    try:
+        r = c.post("/api/admin/native-sms/send", headers=headers,
+                   json={"phone": "13900001111", "text": "测试正文"})
+        check("原生短信：发送成功", r.get_json().get("code") == 0, r.get_json())
+        check("原生短信：发送走内部函数", sent and sent[0] == ("13900001111", "测试正文"), sent)
+        r = c.post("/api/admin/native-sms/send", headers=headers,
+                   json={"phone": "123", "text": "x"})
+        check("原生短信：校验手机号", r.get_json().get("code") == 1002, r.get_json())
+        r = c.post("/api/admin/native-sms/send", headers=headers,
+                   json={"phone": "13900001111", "text": "  "})
+        check("原生短信：校验内容", r.get_json().get("code") == 1002, r.get_json())
+    finally:
+        _smt.send_text = real_send_text
+
+    # 自动通知开关（写回临时 .env 再清理）
+    env_tmp2 = os.path.join(tempfile.gettempdir(), "smoke_native_sms.env")
+    with open(env_tmp2, "w", encoding="utf-8") as f:
+        f.write("DB_HOST=127.0.0.1\n")
+    cfg["ENV_FILE"] = env_tmp2
+    cfg["NOTIFY_AUTO_SMS"] = True
+    cfg["NOTIFY_AUTO_EMAIL"] = True
+    try:
+        r = c.put("/api/admin/native-sms/settings", headers=headers,
+                  json={"auto_sms": False, "auto_email": True})
+        check("消息通知：开关可保存", r.get_json().get("code") == 0, r.get_json())
+        check("消息通知：自动短信已关闭", cfg.get("NOTIFY_AUTO_SMS") is False, cfg.get("NOTIFY_AUTO_SMS"))
+        check("消息通知：自动邮件保持开启", cfg.get("NOTIFY_AUTO_EMAIL") is True, cfg.get("NOTIFY_AUTO_EMAIL"))
+        with open(env_tmp2, encoding="utf-8") as f:
+            env_body = f.read()
+        check("消息通知：开关写回 .env",
+              "NOTIFY_AUTO_SMS=0" in env_body and "NOTIFY_AUTO_EMAIL=1" in env_body, env_body)
+
+        r = c.get("/api/admin/native-sms/settings", headers=headers)
+        flags = (r.get_json() or {}).get("data") or {}
+        check("消息通知：开关可读", flags.get("auto_sms") is False and flags.get("auto_email") is True, flags)
+
+        # 关掉自动短信后，打印完成不再自动发短信
+        r = c.put("/api/admin/native-sms/settings", headers=headers, json={"auto_sms": False})
+        check("消息通知：空请求被拒",
+              c.put("/api/admin/native-sms/settings", headers=headers, json={}).get_json().get("code") == 1002)
+    finally:
+        cfg["ENV_FILE"] = saved.get("ENV_FILE")
+        cfg["NOTIFY_AUTO_SMS"] = True
+        cfg["NOTIFY_AUTO_EMAIL"] = True
+        try:
+            os.remove(env_tmp2)
+        except OSError:
+            pass
+
+    # 通知模板：可读可存、换行往返、空值被拒
+    r = c.get("/api/admin/native-sms/settings", headers=headers)
+    tpl = ((r.get_json() or {}).get("data") or {}).get("templates") or {}
+    check("通知模板：接口返回三种模板",
+          all(k in tpl for k in ("sms", "email_subject", "email_body")), tpl)
+    check("通知模板：返回可用占位符", bool(tpl.get("placeholders")), tpl.get("placeholders"))
+    check("通知模板：邮件正文是多行", "\n" in (tpl.get("email_body") or ""), tpl.get("email_body"))
+
+    env_tmp3 = os.path.join(tempfile.gettempdir(), "smoke_native_tpl.env")
+    with open(env_tmp3, "w", encoding="utf-8") as f:
+        f.write("DB_HOST=127.0.0.1\n")
+    cfg["ENV_FILE"] = env_tmp3
+    try:
+        body = "{name} 同学：\n\n申请（{apply_no}）已完成。\n\n理工大学"
+        r = c.put("/api/admin/native-sms/settings", headers=headers,
+                  json={"templates": {"sms": "【短信】{name} {apply_no}",
+                                      "email_subject": "【邮件】{name} 打印完成",
+                                      "email_body": body}})
+        check("通知模板：保存成功", r.get_json().get("code") == 0, r.get_json())
+        back = ((r.get_json() or {}).get("data") or {}).get("templates") or {}
+        check("通知模板：换行往返正确",
+              back.get("email_body") == body, back.get("email_body"))
+        with open(env_tmp3, encoding="utf-8") as f:
+            env_body = f.read()
+        check("通知模板：换行以 \\n 存进 .env",
+              "NOTIFY_EMAIL_TEMPLATE=" in env_body and "\\n" in env_body,
+              env_body[:200])
+        check("通知模板：短信模板已写回", "NOTIFY_SMS_TEMPLATE=【短信】" in env_body, env_body[:200])
+
+        r = c.put("/api/admin/native-sms/settings", headers=headers,
+                  json={"templates": {"sms": "   "}})
+        check("通知模板：空短信模板被拒", r.get_json().get("code") == 1002, r.get_json())
+        r = c.put("/api/admin/native-sms/settings", headers=headers,
+                  json={"templates": {"email_subject": ""}})
+        check("通知模板：空邮件主题被拒", r.get_json().get("code") == 1002, r.get_json())
+
+        # 渲染：占位符被替换
+        from services import notify_templates as _tpl
+        with app.app_context():
+            cfg["NOTIFY_SMS_TEMPLATE"] = "【短信】{name} {apply_no}"
+            out = _tpl.render_pickup_sms(db.session.get(PrintApplication, pr_id))
+        check("通知模板：占位符渲染生效", "【短信】" in out and "{" not in out.replace("（", "（"), out)
+    finally:
+        cfg["ENV_FILE"] = saved.get("ENV_FILE")
+        for k in ("NOTIFY_SMS_TEMPLATE", "NOTIFY_EMAIL_SUBJECT", "NOTIFY_EMAIL_TEMPLATE"):
+            cfg[k] = saved.get(k, "")
+        try:
+            os.remove(env_tmp3)
+        except OSError:
+            pass
+
+    r = c.get("/api/admin/native-sms/outbound?limit=10", headers=headers)
+    ob = (r.get_json() or {}).get("data") or {}
+    check("消息通知：发送记录可读", r.get_json().get("code") == 0 and isinstance(ob.get("items"), list), r.get_json())
+
+    check("原生短信：普通用户无权查看状态",
+          c.get("/api/admin/native-sms/status", headers=stu_headers).status_code == 403)
+    check("原生短信：普通用户无权发送",
+          c.post("/api/admin/native-sms/send", headers=stu_headers,
+                 json={"phone": "13900001111", "text": "x"}).status_code == 403)
+
+    # 7.19 普通管理员权限：搜索学生 / 邮件接口可用（仅超管专属的是 set-role）
+    adm2 = {"Authorization": "Bearer " + c.post("/api/auth/cas-login", json={"student_id": "20260002", "password": "x"}).get_json()["data"]["token"]}
+    r = c.post("/api/admin/set-role", headers=headers, json={"student_id": "20260002", "role": "admin"})
+    check("提升普通管理员", r.get_json().get("code") == 0, r.get_json())
+    r = c.get("/api/admin/users/search?keyword=杨", headers=adm2)
+    hits = r.get_json().get("data") or []
+    check("普通管理员可搜索学生", r.get_json().get("code") == 0, r.get_json())
+    r = c.get("/api/admin/email/list", headers=adm2)
+    check("普通管理员可看邮件记录", r.get_json().get("code") == 0, r.get_json())
+    r = c.post("/api/admin/email/send", headers=adm2,
+               json={"to": "test@example.com", "subject": "t", "body": "b"})
+    rj = r.get_json() or {}
+    check("普通管理员可尝试发邮件（假域名被拦截也返回业务码）", rj.get("code") in (0, 1002), rj)
+    r = c.post("/api/admin/set-role", headers=adm2, json={"student_id": "20260002", "role": "admin"})
+    check("普通管理员不能改角色", r.get_json().get("code") in (403, 1002), r.get_json())
+    r = c.post("/api/admin/set-role", headers=headers, json={"student_id": "20260002", "role": "user"})
+    check("恢复学生角色", r.get_json().get("code") == 0, r.get_json())
 
     # 8. 退出登录
     r = c.post("/api/auth/logout", headers=headers)

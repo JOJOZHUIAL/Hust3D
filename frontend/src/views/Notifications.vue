@@ -1,40 +1,42 @@
 <template>
   <div class="page notifications">
-    <van-nav-bar title="消息中心" left-arrow fixed placeholder @click-left="goBack">
-      <template #right>
-        <span v-if="list.length" class="read-all" @click="onReadAll">全部已读</span>
-      </template>
-    </van-nav-bar>
-
-    <van-empty v-if="!loading && list.length === 0" description="暂无消息" />
-
-    <van-cell-group v-else inset style="margin-top: 10px">
-      <van-cell
-        v-for="n in list"
-        :key="n.id"
-        :label="n.body || ''"
-        is-link
-        :class="{ unread: !n.is_read }"
-        @click="onItemClick(n)"
-      >
-        <template #title>
-          <span class="n-title">
-            <span v-if="!n.is_read" class="n-dot"></span>
-            {{ n.title }}
-          </span>
+    <van-pull-refresh v-model="refreshing" @refresh="onRefresh">
+      <van-nav-bar title="消息中心" left-arrow fixed placeholder @click-left="goBack">
+        <template #right>
+          <span v-if="list.length" class="read-all" @click="onReadAll">全部已读</span>
         </template>
-        <template #value>
-          <span class="n-time">{{ (n.created_at || '').slice(5, 16) }}</span>
-        </template>
-      </van-cell>
-    </van-cell-group>
+      </van-nav-bar>
 
-    <TabBar />
+      <van-empty v-if="!loading && list.length === 0" description="暂无消息" />
+
+      <van-cell-group v-else inset style="margin-top: 10px">
+        <van-cell
+          v-for="n in list"
+          :key="n.id"
+          :label="n.body || ''"
+          is-link
+          :class="{ unread: !n.is_read }"
+          @click="onItemClick(n)"
+        >
+          <template #title>
+            <span class="n-title">
+              <span v-if="!n.is_read" class="n-dot"></span>
+              {{ n.title }}
+            </span>
+          </template>
+          <template #value>
+            <span class="n-time">{{ (n.created_at || '').slice(5, 16) }}</span>
+          </template>
+        </van-cell>
+      </van-cell-group>
+
+      <TabBar />
+    </van-pull-refresh>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onActivated } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   getNotificationList, readNotification, readAllNotifications,
@@ -93,6 +95,14 @@ async function onReadAll() {
 }
 
 onMounted(load)
+onActivated(load)
+
+// —— App 下拉刷新（原生 App 内由 Capacitor 提供触摸滚动，网页同理）——
+const refreshing = ref(false)
+async function onRefresh() {
+  await load()
+  refreshing.value = false
+}
 </script>
 
 <style scoped>

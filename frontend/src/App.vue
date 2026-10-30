@@ -1,12 +1,24 @@
 <template>
   <div class="app-root">
-    <router-view />
+    <!-- 页面切换淡入过渡 + 常用页缓存（切 tab 秒开、滚动位置保留） -->
+    <router-view v-slot="{ Component }">
+      <transition name="page" mode="out-in">
+        <keep-alive :include="keepAlivePages">
+          <component :is="Component" />
+        </keep-alive>
+      </transition>
+    </router-view>
+
+    <!-- 公共管理员账号：操作人学号登记弹窗（审批 / 开始打印 / 拆封耗材） -->
+    <OperatorDialog />
   </div>
 </template>
 
 <script setup>
 import { onMounted, onUnmounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { showNotify, showConfirmDialog } from 'vant'
+import OperatorDialog from './components/OperatorDialog.vue'
 import { useAuthStore } from './store/auth'
 import { getUserInfo } from './api/user'
 import { getNotificationUnread, getNotificationList } from './api/notification'
@@ -14,7 +26,11 @@ import { getLatestAppRelease } from './api/app'
 import { setUnread, unreadCount } from './store/notification'
 import { isNative, getServerBase, assetUrl } from './utils/server'
 
+// 缓存的常用页面（组件名由文件名推断）：切 tab 不重新加载，滚动位置保留
+const keepAlivePages = 'Home,MyApplications,Notifications,Profile,Guide,AdminHome'
+
 const auth = useAuthStore()
+const router = useRouter()
 let timer = null
 let lastCount = null // 首轮只校准，不弹横幅
 
@@ -112,7 +128,15 @@ async function pollUnread() {
       const list = await getNotificationList(true)
       const latest = list[0]
       if (latest) {
-        showNotify({ type: 'primary', message: latest.title, duration: 3500 })
+        showNotify({
+          type: 'primary',
+          message: latest.title,
+          duration: 3500,
+          // 点横幅直达通知对应页面（留言→聊天、反馈→审核页、新申请→审批管理…）
+          onClick: () => {
+            if (latest.link) router.push(latest.link)
+          },
+        })
         if (isNative()) {
           // 动态引入，浏览器端不加载原生模块
           const { LocalNotifications } = await import('@capacitor/local-notifications')

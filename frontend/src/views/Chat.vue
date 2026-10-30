@@ -246,7 +246,10 @@ async function load(silent = false) {
     const data = await getChatMessages(params, silent)
     if (adminMode.value) peer.value = data.peer
     const pinned = isNearBottom()
-    messages.value = data.messages || []
+    // 内容没变化就不替换，避免轮询导致气泡闪烁
+    if (JSON.stringify(data.messages || []) !== JSON.stringify(messages.value)) {
+      messages.value = data.messages || []
+    }
     if (pinned) scrollToBottom()
   } catch (e) {
     /* 静默轮询失败不打扰；首次加载由拦截器提示 */

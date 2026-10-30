@@ -61,6 +61,41 @@
       </van-cell-group>
     </div>
 
+    <!-- 预计反馈时间 -->
+    <div class="form-section">
+      <div class="form-section-title">预计反馈时间</div>
+      <van-cell-group inset>
+        <van-cell
+          title="计划何时交反馈"
+          :value="expectedFeedbackText"
+          is-link
+          @click="showExpected = true"
+        />
+        <van-field
+          v-if="expectedAt"
+          v-model="expectedNote"
+          label="情况说明"
+          type="textarea"
+          rows="2"
+          autosize
+          maxlength="200"
+          show-word-limit
+          required
+          placeholder="不按默认期限需说明原因，例如：参加省赛，10 月 20 日赛后才能拍摄实物图"
+        />
+        <div class="feedback-note">
+          打印完成后的 <b>{{ expireDays }}</b> 天内为正常反馈期，请上传实物图或现场照片。
+          超过 {{ expireDays }} 天仍未反馈，该申请会标记为「已过期」：
+          <b>仍可补交，但需要管理员审核，且不再发放奖励。</b>
+          <br />
+          <span class="dim">
+            留空「计划何时交反馈」即按默认期限；
+            如果<b>自行指定了时间</b>，必须在下方说明情况，方便管理员安排。
+          </span>
+        </div>
+      </van-cell-group>
+    </div>
+
     <!-- 第四部分：服务声明与确认 -->
     <div class="form-section">
       <div class="form-section-title">服务声明与确认<span class="req">*</span></div>
@@ -102,21 +137,67 @@
         @cancel="showPurpose = false"
       />
     </van-popup>
+
+    <!-- 预计反馈时间选择 -->
+    <van-popup v-model:show="showExpected" position="bottom" round>
+      <van-date-picker
+        v-model="expectedParts"
+        title="预计反馈时间"
+        :min-date="minDate"
+        :max-date="maxDate"
+        @confirm="onExpectedConfirm"
+        @cancel="showExpected = false"
+      />
+      <div class="expected-actions">
+        <van-button size="small" plain round @click="clearExpected">按默认期限</van-button>
+      </div>
+    </van-popup>
   </div>
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { showFailToast, showSuccessToast } from 'vant'
 import SignaturePad from '../components/SignaturePad.vue'
-import { submitApplication } from '../api/application'
+import { submitApplication, getApplyMeta } from '../api/application'
 import { useAuthStore } from '../store/auth'
 import { PURPOSE, PURPOSE_TEXT, TERMS } from '../utils/constants'
 
 const router = useRouter()
 const auth = useAuthStore()
 const user = computed(() => auth.user)
+
+// 预计反馈时间
+const showExpected = ref(false)
+const expectedAt = ref('') // YYYY-MM-DD
+const expectedNote = ref('') // 不按默认期限时的说明
+const expectedParts = ref([])
+const expireDays = ref(7)
+const minDate = new Date()
+const maxDate = new Date(Date.now() + 365 * 24 * 3600 * 1000)
+const expectedFeedbackText = computed(() => expectedAt.value || '按默认期限')
+
+function onExpectedConfirm({ selectedValues }) {
+  expectedAt.value = selectedValues.join('-')
+  showExpected.value = false
+}
+
+function clearExpected() {
+  expectedAt.value = ''
+  expectedNote.value = ''
+  expectedParts.value = []
+  showExpected.value = false
+}
+
+onMounted(async () => {
+  try {
+    const meta = await getApplyMeta()
+    if (meta?.feedback_expire_days) expireDays.value = meta.feedback_expire_days
+  } catch (e) {
+    /* 拿不到就用默认 7 天 */
+  }
+})
 
 const phone = ref(user.value?.phone || '')
 const email = ref(user.value?.email || '')
@@ -222,6 +303,10 @@ async function onSubmit() {
   fd.append('email', emailVal)
   fd.append('file', rawFile.value)
   fd.append('sign', signRef.value.toDataURL())
+  if (expectedAt.value) {
+    fd.append('expected_feedback_at', expectedAt.value)
+    fd.append('expected_feedback_note', expectedNote.value.trim())
+  }
 
   submitting.value = true
   try {
@@ -251,6 +336,27 @@ async function onSubmit() {
 }
 .req {
   color: #ee0a24;
+}
+.feedback-note {
+  margin: 4px 16px 14px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: #646566;
+  background: #f7f8fa;
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+.feedback-note b {
+  color: #ee0a24;
+  font-weight: 600;
+}
+.feedback-note .dim {
+  color: #969799;
+}
+.expected-actions {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0 16px;
 }
 .file-upload {
   display: flex;

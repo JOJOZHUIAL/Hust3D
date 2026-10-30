@@ -1,55 +1,57 @@
 <template>
   <div class="page admin page--wide">
-    <van-nav-bar title="留言消息" left-arrow fixed placeholder @click-left="$router.replace('/admin')">
-      <template #right>
-        <van-icon name="plus" size="20" @click="openContacts" />
-      </template>
-    </van-nav-bar>
+    <van-pull-refresh v-model="refreshing" @refresh="onRefresh">
+      <van-nav-bar title="留言消息" left-arrow fixed placeholder @click-left="$router.replace('/admin')">
+        <template #right>
+          <van-icon name="plus" size="20" @click="openContacts" />
+        </template>
+      </van-nav-bar>
 
-    <div class="conv-body">
-      <van-empty v-if="!loading && list.length === 0" description="暂无学生留言，点右上角 + 主动联系学生" />
-      <van-cell-group inset>
-        <van-cell
-          v-for="c in list"
-          :key="c.user.id"
-          :title="c.user.name || c.user.student_id"
-          :label="preview(c.last_message)"
-          is-link
-          @click="$router.push({ name: 'admin-chat-room', params: { userId: c.user.id } })"
-        >
-          <template #icon>
-            <div class="conv-avatar">{{ (c.user.name || c.user.student_id || '学')[0] }}</div>
-          </template>
-          <template #value>
-            <div class="conv-right">
-              <span class="conv-time">{{ shortTime(c.last_message.created_at) }}</span>
-              <van-badge v-if="c.unread > 0" :content="c.unread" max="99" />
-            </div>
-          </template>
-        </van-cell>
-      </van-cell-group>
-    </div>
-    <!-- 发起会话：选择学生 -->
-    <van-popup v-model:show="showContacts" position="bottom" round :style="{ height: '60%' }">
-      <div class="contact-panel">
-        <van-search v-model="searchKey" placeholder="搜索姓名 / 学号" shape="round" />
-        <div class="contact-list">
+      <div class="conv-body">
+        <van-empty v-if="!loading && list.length === 0" description="暂无学生留言，点右上角 + 主动联系学生" />
+        <van-cell-group inset>
           <van-cell
-            v-for="u in filteredContacts"
-            :key="u.id"
-            :title="u.name || u.student_id"
-            :label="`${u.student_id || ''} · ${u.college || ''}`"
+            v-for="c in list"
+            :key="c.user.id"
+            :title="c.user.name || c.user.student_id"
+            :label="preview(c.last_message)"
             is-link
-            @click="goRoom(u)"
+            @click="$router.push({ name: 'admin-chat-room', params: { userId: c.user.id } })"
           >
             <template #icon>
-              <div class="conv-avatar">{{ (u.name || u.student_id || '学')[0] }}</div>
+              <div class="conv-avatar">{{ (c.user.name || c.user.student_id || '学')[0] }}</div>
+            </template>
+            <template #value>
+              <div class="conv-right">
+                <span class="conv-time">{{ shortTime(c.last_message.created_at) }}</span>
+                <van-badge v-if="c.unread > 0" :content="c.unread" max="99" />
+              </div>
             </template>
           </van-cell>
-          <van-empty v-if="filteredContacts.length === 0" description="没有匹配的学生" />
-        </div>
+        </van-cell-group>
       </div>
-    </van-popup>
+      <!-- 发起会话：选择学生 -->
+      <van-popup v-model:show="showContacts" position="bottom" round :style="{ height: '60%' }">
+        <div class="contact-panel">
+          <van-search v-model="searchKey" placeholder="搜索姓名 / 学号" shape="round" />
+          <div class="contact-list">
+            <van-cell
+              v-for="u in filteredContacts"
+              :key="u.id"
+              :title="u.name || u.student_id"
+              :label="`${u.student_id || ''} · ${u.college || ''}`"
+              is-link
+              @click="goRoom(u)"
+            >
+              <template #icon>
+                <div class="conv-avatar">{{ (u.name || u.student_id || '学')[0] }}</div>
+              </template>
+            </van-cell>
+            <van-empty v-if="filteredContacts.length === 0" description="没有匹配的学生" />
+          </div>
+        </div>
+      </van-popup>
+    </van-pull-refresh>
   </div>
 </template>
 
@@ -123,6 +125,13 @@ onMounted(() => {
 })
 
 onUnmounted(() => clearInterval(pollTimer))
+
+// —— App 下拉刷新（原生 App 内由 Capacitor 提供触摸滚动，网页同理）——
+const refreshing = ref(false)
+async function onRefresh() {
+  await load()
+  refreshing.value = false
+}
 </script>
 
 <style scoped>

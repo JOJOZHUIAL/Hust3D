@@ -30,6 +30,13 @@ export const reviewFeedback = (data) => request.post('/api/admin/feedback/review
 // 手动（重新）发送取件短信给申请人
 export const resendSms = (appId) => request.post(`/api/admin/application/send-sms/${appId}`)
 
+// 给未反馈/已过期的申请人发反馈提醒短信
+export const remindFeedbackSms = (appId) => request.post(`/api/admin/application/remind-feedback/${appId}`)
+
+// 反馈提醒邮件（与短信提醒并列；按是否过期使用对应模板）
+export const remindFeedbackEmail = (appId) =>
+  request.post(`/api/admin/application/remind-feedback-email/${appId}`)
+
 // 短信网关配置（脱敏）
 export const getSmsConfig = () => request.get('/api/admin/sms/config')
 
@@ -57,3 +64,21 @@ export const deleteSms = (id) => request.delete(`/api/admin/sms/messages/${id}`)
 
 // 发一条测试短信到指定手机号
 export const testSms = (phone) => request.post('/api/admin/sms/test', { phone })
+
+// —— 原生短信模块（直接读 sms.db + 内部发送）——
+export const getNativeSmsStatus = () => request.get('/api/admin/native-sms/status')
+export const getNativeSmsMessages = (params) => request.get('/api/admin/native-sms/messages', { params })
+export const getNativeSmsLog = (since) => request.get('/api/admin/native-sms/log', { params: { since } })
+export const pullNativeSms = () => request.post('/api/admin/native-sms/pull')
+export const getNativeSmsOutbound = (params) => request.get('/api/admin/native-sms/outbound', { params })
+export const sendNativeSms = (data) => request.post('/api/admin/native-sms/send', data)
+export const getNativeSmsSettings = () => request.get('/api/admin/native-sms/settings')
+export const saveNativeSmsSettings = (data) => request.put('/api/admin/native-sms/settings', data)
+
+// —— 邮件通道（消息通知页）：发送 / 记录 / 收件箱 ——
+export const sendEmail = (data) => request.post('/api/admin/email/send', data)
+
+export const getEmailList = () => request.get('/api/admin/email/list')
+
+// silent：拉不到邮件（未收到 / 网关超时等）不在全局弹"网络异常"，由页面显示"没有任何邮件"
+export const getEmailInbox = () => request.get('/api/admin/email/inbox', { timeout: 20000, silent: true })

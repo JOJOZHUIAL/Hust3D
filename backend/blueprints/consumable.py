@@ -13,7 +13,7 @@ from sqlalchemy import desc, or_
 from extensions import db
 from models import Consumable, ConsumableLog
 from utils.response import ok, fail
-from utils.auth import admin_required
+from utils.auth import admin_required, resolve_operator
 from services.logger import log_action
 from services.notify import notify_admins
 
@@ -35,13 +35,13 @@ def _clean_barcode(raw):
     return bc
 
 
-def _write_log(item, action, change, note=None):
+def _write_log(item, action, change, note=None, operator_id=None):
     db.session.add(ConsumableLog(
         consumable_id=item.id,
         action=action,
         quantity_change=change,
         quantity_after=item.quantity,
-        operator_id=g.user.id,
+        operator_id=operator_id or g.user.id,
         note=(note or None),
     ))
 
@@ -131,13 +131,21 @@ def open_item():
     if item.quantity < 1:
         return fail(f"「{item.name}」库存为 0，无法拆封", code=1002)
 
+    # 公共管理员账号：必须登记实际操作人（记到拆封人上）
+    operator, err = resolve_operator(data)
+    if err:
+        return err
+
     note = (data.get("note") or "").strip()[:NOTE_MAX] or None
     item.quantity -= 1
-    _write_log(item, "open", -1, note=note)
+    _write_log(item, "open", -1, note=note, operator_id=operator.id)
     notify_admins("consumable", f"耗材拆封：{item.name}",
-                  f"{g.user.name or g.user.student_id} 拆封 1 {item.unit}，剩余 {item.quantity} {item.unit}",
+                  f"{operator.name or operator.student_id} 拆封 1 {item.unit}，剩余 {item.quantity} {item.unit}",
                   link="/admin/consumables", exclude_uid=g.user.id)
-    log_action(g.user.id, "consumable_open", f"拆封 {item.name}({bc})，余 {item.quantity}")
+    log_action(operator.id, "consumable_open",
+               f"拆封 {item.name}({bc})，余 {item.quantity}"
+               + (f"（公共账号操作，操作人：{operator.name}）"
+                  if getattr(g.user, "is_shared_admin", False) else ""))
 
     try:
         db.session.commit()

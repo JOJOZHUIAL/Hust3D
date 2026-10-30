@@ -34,6 +34,45 @@ def read_text(path):
         return None
 
 
+def set_var(key, value):
+    """把 .env 里的单个 KEY=value 改写（保留其它行与注释；原子替换）。
+
+    与 update_list_var 的区别：不做逗号拼接，值里可以带逗号（比如带查询串的 URL）。
+    """
+    path = env_file_path()
+    line = f"{key}={value or ''}"
+    pattern = re.compile(rf"^(?P<indent>[ \t]*){re.escape(key)}[ \t]*=.*$", re.MULTILINE)
+
+    text = read_text(path)
+    if text is None:
+        new_text = f"# 由管理端自动维护：{key}\n{line}\n"
+    elif pattern.search(text):
+        new_text = pattern.sub(lambda m: f"{m.group('indent')}{line}", text, count=1)
+    else:
+        base = text
+        if base and not base.endswith("\n"):
+            base += "\n"
+        new_text = f"{base}{line}\n"
+
+    if new_text == text:
+        return True
+
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".env.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(new_text)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+    return True
+
+
 def update_list_var(key, values):
     """把 .env 里的 KEY=a,b,c 改写为 values（列表为空则写成空值）。
 

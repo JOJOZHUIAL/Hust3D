@@ -6,9 +6,9 @@ from datetime import datetime, timedelta
 from flask import Blueprint, current_app, request, g, send_file
 from sqlalchemy import or_
 from extensions import db
-from models import PrintApplication, Printer, User, SmsMessage, feedback_expire_days
+from models import PrintApplication, Printer, User, SmsMessage, FeedbackImage, feedback_expire_days
 from utils.response import ok, fail
-from utils.auth import admin_required, super_required
+from utils.auth import admin_required, super_required, resolve_operator
 from utils.env_file import update_list_var
 from services.quota import ensure_quota
 from services.logger import log_action
@@ -130,6 +130,11 @@ def review():
     if app_obj.status != "pending":
         return fail("该申请已处理", code=1002)
 
+    # 公共管理员账号：必须登记实际操作人
+    operator, err = resolve_operator(data)
+    if err:
+        return err
+
     if action == "approve":
         app_obj.status = "approved"
         app_obj.admin_comment = comment or None
@@ -153,13 +158,15 @@ def review():
         return fail("无效的审批操作", code=1002)
 
     # 记录审批人信息（id + 姓名/学号快照），便于事后追溯
-    app_obj.reviewer_id = g.user.id
-    app_obj.reviewer_name = g.user.name
-    app_obj.reviewer_student_id = g.user.student_id
+    app_obj.reviewer_id = operator.id
+    app_obj.reviewer_name = operator.name
+    app_obj.reviewer_student_id = operator.student_id
     app_obj.reviewer_sign = reviewer_sign or None
     app_obj.reviewed_at = datetime.now()
     extra = "，已返还 1 次打印机会" if action == "reject" else ""
-    log_action(g.user.id, "review",
+    if getattr(g.user, "is_shared_admin", False):
+        extra += f"（公共账号操作，操作人：{operator.name}）"
+    log_action(operator.id, "review",
                f"{action} 申请 {app_obj.apply_no}: {comment}{extra}")
     db.session.commit()
     return ok(app_obj.to_dict(), msg="操作成功")
@@ -189,6 +196,10 @@ def update_status():
             return fail("仅「已通过」或「打印中」的申请可标记打印失败", code=1002)
         if not reason:
             return fail("请填写打印失败原因", code=1002)
+        # 公共管理员账号：标记打印失败也要登记实际操作人
+        operator, err = resolve_operator(data)
+        if err:
+            return err
         app_obj.status = "failed"
         app_obj.admin_comment = reason
         user = app_obj.user
@@ -207,12 +218,19 @@ def update_status():
                 f"本次打印次数已返还至你的账户，欢迎修改模型后重新提交。\n\n"
                 f"理工智造共享平台 · 大学生创新创业协会",
             )
-        log_action(g.user.id, "update_status", f"申请 {app_obj.apply_no} 标记打印失败，返还次数")
+        log_action(operator.id, "update_status",
+                   f"申请 {app_obj.apply_no} 标记打印失败，返还次数"
+                   + (f"（公共账号操作，操作人：{operator.name}）"
+                      if getattr(g.user, "is_shared_admin", False) else ""))
         db.session.commit()
         return ok(app_obj.to_dict(), msg="已标记打印失败，打印次数已返还")
 
     send_sms_after_commit = False
     app_obj.status = status
+    # 公共管理员账号点「开始打印」时必须登记实际操作人
+    operator, err = resolve_operator(data, required=(status == "printing"))
+    if err:
+        return err
     if status == "printing":
         # —— 绑定打印机：让打印机状态页显示「正在打印该申请的 STL」，并开启进度自动完成 ——
         printer = None
@@ -235,10 +253,10 @@ def update_status():
         app_obj.print_seen_running = False  # 等监视器确认打印机真的在打本申请
         app_obj.completed_auto = False
         app_obj.printed_at = datetime.now()
-        # 记录打印人信息（id + 姓名/学号快照）
-        app_obj.printed_by_id = g.user.id
-        app_obj.printed_by_name = g.user.name
-        app_obj.printed_by_student_id = g.user.student_id
+        # 记录打印人信息（id + 姓名/学号快照）；公共账号则记实际操作人
+        app_obj.printed_by_id = operator.id
+        app_obj.printed_by_name = operator.name
+        app_obj.printed_by_student_id = operator.student_id
         notify_user(app_obj.user_id, "status",
                     f"申请 {app_obj.apply_no} 已安排打印",
                     (f"已安排到打印机「{printer.name}」打印「{app_obj.file_name or '模型文件'}」"
@@ -268,16 +286,9 @@ def update_status():
         # 打印完成：邮件通知领取（学生填过邮箱才发；SMTP 未配置则静默跳过）
         user = app_obj.user
         if user and user.email:
-            send_mail_async(
-                user.email,
-                "【3D打印服务】你的打印件已完成，请领取",
-                f"{user.name or ''} 同学：\n\n"
-                f"你提交的申请（{app_obj.apply_no}）已打印完成，"
-                f"请携带校园卡到创新创业协会工作室领取。\n\n"
-                f"领取后欢迎上传实物图反馈，成功可奖励 1 次打印机会。\n\n"
-                f"理工智造共享平台 · 大学生创新创业协会",
-            )
-
+            from services import notify_templates
+            _subj, _body = notify_templates.render_pickup_email(app_obj)
+            send_mail_async(user.email, _subj, _body)
     log_action(g.user.id, "update_status",
                f"申请 {app_obj.apply_no} → {status}"
                + (f"（打印机：{app_obj.printer_name}）" if status == "printing" and app_obj.printer_name else ""))
@@ -315,6 +326,78 @@ def resend_sms(app_id):
     if row is not None and row.status == "pending":
         return ok(app_obj.to_dict(), msg="网关暂时连不上，已加入待发送队列，手机上线后自动补发")
     return fail((row.last_error if row else "") or "发送失败", code=1002)
+
+
+@bp.route("/application/remind-feedback/<int:app_id>", methods=["POST"])
+@admin_required
+def remind_feedback(app_id):
+    """给未反馈 / 已过期的申请人发反馈提醒短信（审批管理与详情页的按钮）。"""
+    app_obj = db.session.get(PrintApplication, app_id)
+    if app_obj is None:
+        return fail("申请不存在", code=404, http_status=404)
+    if app_obj.status != "completed":
+        return fail("仅已完成的申请可提醒反馈", code=1002)
+    if app_obj.feedback_url:
+        return fail("该申请已提交反馈，无需提醒", code=1002)
+    phone = ((app_obj.user.phone if app_obj.user else "") or "").strip()
+    if not phone:
+        return fail("申请人没有填写手机号", code=1002)
+    if not current_app.config.get("SMS_ENABLED"):
+        return fail("短信通知未启用（SMS_ENABLED=0）", code=1002)
+
+    content = sms.build_feedback_remind_message(app_obj, expired=app_obj.expired_at is not None)
+    msg, sent, detail = sms.send_or_queue(
+        phone, content, kind="feedback_remind",
+        application_id=app_obj.id, apply_no=app_obj.apply_no,
+        receiver_name=app_obj.user.name if app_obj.user else None,
+        sender_id=g.user.id, sender_name=g.user.name,
+    )
+    log_action(g.user.id, "remind_feedback_sms",
+               f"反馈提醒短信 → {phone}（#{msg.id}，申请 {app_obj.apply_no}）")
+    data = {"sms_id": msg.id, "phone": phone, "content": content,
+            "status": msg.status, "queued": msg.status == "pending"}
+    if sent:
+        return ok(data, msg=f"已发送到 {phone}")
+    if msg.status == "pending":
+        return ok(data, msg="网关暂时连不上，已加入待发送队列，设备上线后自动补发")
+    return fail(detail or "发送失败", code=1002)
+
+
+@bp.route("/application/remind-feedback-email/<int:app_id>", methods=["POST"])
+@admin_required
+def remind_feedback_email(app_id):
+    """给未反馈 / 已过期的申请人发反馈提醒邮件（与短信提醒并列的按钮）。"""
+    from models import EmailMessage
+    from services import notify_templates
+    from services.mailer import send_mail_now
+
+    app_obj = db.session.get(PrintApplication, app_id)
+    if app_obj is None:
+        return fail("申请不存在", code=404, http_status=404)
+    if app_obj.status != "completed":
+        return fail("仅已完成的申请可提醒反馈", code=1002)
+    if app_obj.feedback_url:
+        return fail("该申请已提交反馈，无需提醒", code=1002)
+
+    to = ((app_obj.user.email if app_obj.user else "") or "").strip()
+    if not to:
+        return fail("申请人没有填写电子邮箱", code=1002)
+    if not current_app.config.get("SMTP_HOST"):
+        return fail("邮件通知未配置（.env 缺少 SMTP_HOST）", code=1002)
+
+    expired = app_obj.expired_at is not None
+    subject, body = notify_templates.render_remind_email(app_obj, expired=expired)
+    row = EmailMessage(to_addr=to, subject=subject[:255], body=body[:10000])
+    db.session.add(row)
+    ok_flag, err = send_mail_now(to, subject, body)
+    row.status = "sent" if ok_flag else "failed"
+    row.error = None if ok_flag else (err or "")[:500]
+    log_action(g.user.id, "remind_feedback_email",
+               f"反馈提醒邮件 -> {to}（申请 {app_obj.apply_no}，{'已过期' if expired else '未过期'}）")
+    db.session.commit()
+    if not ok_flag:
+        return fail(f"发送失败：{err}", code=1002)
+    return ok({"to": to, "subject": subject, "body": body}, msg=f"已发送到 {to}")
 
 
 @bp.route("/sms/send", methods=["POST"])
@@ -503,16 +586,21 @@ def admins_list():
 
 
 @bp.route("/users/search", methods=["GET"])
-@super_required
+@admin_required
 def users_search():
-    """按学号/姓名搜索普通用户（用于添加管理员）。"""
+    """按学号/姓名/手机/邮箱搜索普通用户（消息通知发送、添加管理员共用）。"""
     kw = (request.args.get("keyword") or "").strip()
     if not kw:
         return ok([])
     like = f"%{kw}%"
     rows = User.query.filter(
         User.role == "user",
-        or_(User.student_id.like(like), User.name.like(like)),
+        or_(
+            User.student_id.like(like),
+            User.name.like(like),
+            User.phone.like(like),
+            User.email.like(like),
+        ),
     ).order_by(User.student_id.asc()).limit(20).all()
     return ok([u.to_dict() for u in rows])
 
@@ -594,6 +682,11 @@ def feedback_review():
     if not app_obj.feedback_url or app_obj.feedback_reviewed != 0:
         return fail("该申请没有待审核的反馈", code=1002)
 
+    # 公共管理员账号：必须登记实际操作人
+    operator, err = resolve_operator(data)
+    if err:
+        return err
+
     # 奖励次数由管理员自选（0 = 仅通过不奖励）
     try:
         reward = int(data.get("reward", 1))
@@ -606,24 +699,151 @@ def feedback_review():
         app_obj.feedback_reviewed = 1
         user = app_obj.user
         ensure_quota(user)
-        if reward:
-            user.remaining_quota += reward
-        notify_user(user.id, "status", "反馈审核通过",
-                    (f"申请 {app_obj.apply_no} 的反馈已确认，奖励 {reward} 次打印机会"
-                     if reward else f"申请 {app_obj.apply_no} 的反馈已确认"),
-                    link=f"/application/{app_obj.id}")
-        log_action(g.user.id, "feedback_review", f"通过 {app_obj.apply_no} 的反馈，奖励 {reward} 次")
-        msg = f"已通过，奖励 {reward} 次已发放" if reward else "已通过，未发放奖励"
+        # 已过期的申请：审核通过也不发放奖励
+        give = reward if app_obj.expired_at is None else 0
+        if give and not app_obj.feedback_rewarded:
+            user.remaining_quota += give
+            app_obj.feedback_rewarded = True
+        if app_obj.expired_at is not None:
+            notify_user(user.id, "status", "反馈审核通过",
+                        f"申请 {app_obj.apply_no} 的反馈已确认（该申请已过期，不发放奖励）",
+                        link=f"/application/{app_obj.id}")
+            log_action(operator.id, "feedback_review",
+                       f"通过 {app_obj.apply_no} 的过期补交反馈，未发放奖励"
+                       + (f"（公共账号操作，操作人：{operator.name}）"
+                          if getattr(g.user, "is_shared_admin", False) else ""))
+            msg = "已通过（过期补交，不发放奖励）"
+        else:
+            notify_user(user.id, "status", "反馈审核通过",
+                        (f"申请 {app_obj.apply_no} 的反馈已确认，奖励 {give} 次打印机会"
+                         if give else f"申请 {app_obj.apply_no} 的反馈已确认"),
+                        link=f"/application/{app_obj.id}")
+            log_action(operator.id, "feedback_review",
+                       f"通过 {app_obj.apply_no} 的反馈，奖励 {give} 次"
+                       + (f"（公共账号操作，操作人：{operator.name}）"
+                          if getattr(g.user, "is_shared_admin", False) else ""))
+            msg = f"已通过，奖励 {give} 次已发放" if give else "已通过，未发放奖励"
     else:
-        # 拒绝：清掉反馈回到「未反馈」状态（feedback_reviewed 回到 None），学生可重新上传
+        # 拒绝：清掉反馈（含所有图片）回到「未反馈」状态，学生可重新上传
         app_obj.feedback_reviewed = None
         app_obj.feedback_url = None
         app_obj.feedback_at = None
+        FeedbackImage.query.filter_by(application_id=app_obj.id).delete()
         notify_user(app_obj.user_id, "status", "反馈未通过",
                     f"申请 {app_obj.apply_no} 的反馈未通过审核，可重新上传",
                     link=f"/application/{app_obj.id}")
-        log_action(g.user.id, "feedback_review", f"拒绝 {app_obj.apply_no} 的反馈")
+        log_action(operator.id, "feedback_review",
+                   f"拒绝 {app_obj.apply_no} 的反馈"
+                   + (f"（公共账号操作，操作人：{operator.name}）"
+                      if getattr(g.user, "is_shared_admin", False) else ""))
         msg = "已拒绝，学生可重新上传"
 
     db.session.commit()
     return ok(app_obj.to_dict(), msg=msg)
+
+
+# —— 邮件通道（消息通知页）：发送 / 记录 / 收件箱（IMAP） ——
+
+@bp.route("/email/send", methods=["POST"])
+@admin_required
+def admin_email_send():
+    """发一封邮件（走 .env 的 SMTP，同步发送并把结果落发送记录）。"""
+    import re as _re
+    from models import EmailMessage
+    from services.mailer import send_mail_now
+
+    data = request.get_json(silent=True) or {}
+    to = (data.get("to") or "").strip()
+    subject = (data.get("subject") or "").strip()
+    body = data.get("body") or ""
+
+    if not _re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", to):
+        return fail("收件邮箱格式不正确", code=1002)
+    if not subject:
+        return fail("主题不能为空", code=1002)
+    if not body.strip():
+        return fail("正文不能为空", code=1002)
+
+    row = EmailMessage(to_addr=to, subject=subject[:255], body=body[:10000])
+    db.session.add(row)
+    ok_flag, err = send_mail_now(to, subject, body)
+    row.status = "sent" if ok_flag else "failed"
+    row.error = None if ok_flag else (err or "")[:500]
+    log_action(g.user.id, "email_send",
+               (f"发送邮件至 {to}：{subject[:60]}" if ok_flag else f"邮件发送失败 -> {to}"))
+    db.session.commit()
+    if not ok_flag:
+        return fail(f"发送失败：{err}", code=1002)
+    return ok(row.to_dict(), msg="已发送")
+
+
+@bp.route("/email/list", methods=["GET"])
+@admin_required
+def admin_email_list():
+    """邮件发送记录（最新在前，50 条）。"""
+    from models import EmailMessage
+    rows = EmailMessage.query.order_by(EmailMessage.id.desc()).limit(50).all()
+    return ok([r.to_dict() for r in rows])
+
+
+@bp.route("/email/inbox", methods=["GET"])
+@admin_required
+def admin_email_inbox():
+    """拉取发件邮箱的收件箱（IMAP，最新 20 封）——用于快速回复学生来信。"""
+    import imaplib
+    import email as email_lib
+    from email.header import decode_header, make_header
+
+    def _dec(s):
+        try:
+            return str(make_header(decode_header(s or "")))
+        except Exception:
+            return s or ""
+
+    imap_host = os.getenv("IMAP_HOST") or current_app.config.get("SMTP_HOST", "").replace("smtp.", "imap.", 1)
+    imap_port = int(os.getenv("IMAP_PORT", "993") or 993)
+    if not imap_host:
+        return fail("未配置邮箱（请先在 .env 配置 SMTP_HOST）", code=1002)
+    user = current_app.config.get("SMTP_USER", "")
+    pwd = current_app.config.get("SMTP_PASS", "")
+
+    try:
+        # timeout 必须给：邮箱服务器不可达时否则会无限挂起，前端 20s 就超时报"网络异常"了
+        conn = imaplib.IMAP4_SSL(imap_host, imap_port, timeout=15)
+        try:
+            # 163/QQ 的 IMAP 要求客户端在登录【前】发 ID 命令，否则 SELECT 会被拒（Unsafe Login）
+            imaplib.Commands["ID"] = ("NONAUTH", "AUTH", "SELECTED", "LOGOUT")
+            conn._simple_command("ID", '("name" "HUST3D" "version" "1.0")')
+            conn._untagged_response("OK", [None], "ID")
+        except Exception:
+            pass
+        conn.login(user, pwd)
+        typ, _sel = conn.select("INBOX", readonly=True)
+        if typ != "OK":
+            return fail("收件箱打开失败（服务器拒绝 SELECT）", code=1002)
+        typ, data = conn.search(None, "ALL")
+        ids = data[0].split()[-20:]
+        items = []
+        for eid in reversed(ids):
+            typ, msg_data = conn.fetch(eid, "(RFC822)")
+            m = email_lib.message_from_bytes(msg_data[0][1])
+            frm = _dec(m.get("From", ""))
+            subj = _dec(m.get("Subject", "")) or "（无主题）"
+            snippet = ""
+            for part in m.walk():
+                if part.get_content_type() == "text/plain" and not part.get_filename():
+                    payload = part.get_payload(decode=True)
+                    if payload:
+                        charset = part.get_content_charset() or "utf-8"
+                        snippet = payload.decode(charset, "ignore")[:140].replace(chr(13), " ").replace(chr(10), " ")
+                        break
+            items.append({"from": frm, "subject": subj, "snippet": snippet, "date": _dec(m.get("Date", ""))})
+        try:
+            conn.logout()
+        except Exception:
+            pass
+        return ok({"items": items})
+    except imaplib.IMAP4.error as e:
+        return fail(f"邮箱 IMAP 登录/读取失败：{str(e)[:150]}（请确认邮箱已开启 IMAP 服务）", code=1002)
+    except Exception as e:
+        return fail(f"收件箱读取失败：{str(e)[:150]}", code=1002)

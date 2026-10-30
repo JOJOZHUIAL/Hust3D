@@ -62,15 +62,30 @@ const routes = [
     component: () => import('../views/admin/AppUpdate.vue'),
   },
   {
-    path: '/admin/sms',
-    name: 'admin-sms',
-    component: () => import('../views/admin/AdminSms.vue'),
+    // 消息通知：收件 / 发送 / 状态 / 设置（原「短信通知」与「短信网关」合并）
+    path: '/admin/notify',
+    name: 'admin-notify',
+    component: () => import('../views/admin/AdminNotify.vue'),
   },
 ]
 
 const router = createRouter({
   history: createWebHashHistory(),
   routes,
+})
+
+// 首次导航后空闲时预取全部页面代码块：
+// 之后每次点页面都是本地实例化（0 网络等待），交互不再有加载卡顿
+let prefetched = false
+router.afterEach(() => {
+  if (prefetched) return
+  prefetched = true
+  const idle = window.requestIdleCallback || ((cb) => setTimeout(cb, 1200))
+  idle(() => {
+    routes.forEach((r) => {
+      if (typeof r.component === 'function') r.component().catch(() => {})
+    })
+  })
 })
 
 router.beforeEach((to) => {

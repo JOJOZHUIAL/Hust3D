@@ -16,6 +16,14 @@
       <van-cell title="我的申请" icon="orders-o" is-link to="/applications" />
       <van-cell title="使用指南" icon="question-o" is-link to="/guide" />
       <van-cell
+        title="下载 App"
+        icon="down"
+        :value="appLatest ? `v${appLatest.version_name}` : ''"
+        is-link
+        :loading="downloadingApp"
+        @click="onDownloadApp"
+      />
+      <van-cell
         v-if="isNative"
         title="检测更新"
         icon="replay"
@@ -64,9 +72,10 @@ import { useRouter } from 'vue-router'
 import { showToast, showFailToast, showConfirmDialog } from 'vant'
 import { getUserInfo, getQuota } from '../api/user'
 import { logout } from '../api/auth'
+import { getLatestAppRelease } from '../api/app'
+import { downloadBlob } from '../api/application'
 import { useAuthStore } from '../store/auth'
 import { isNative as isNativePlatform, getServerBase, setServerBase, assetUrl } from '../utils/server'
-import { getLatestAppRelease } from '../api/app'
 import TabBar from '../components/TabBar.vue'
 
 const router = useRouter()
@@ -78,6 +87,30 @@ const remaining = ref(0)
 // App 模式：查看/修改后端服务器地址
 const isNative = isNativePlatform()
 const serverShort = computed(() => getServerBase() || '未设置')
+
+// —— 下载 App：获取服务器最新发布的 APK ——
+const appLatest = ref(null)
+const downloadingApp = ref(false)
+
+async function onDownloadApp() {
+  const l = appLatest.value
+  if (!l) {
+    showToast('尚未发布 App 安装包')
+    return
+  }
+  downloadingApp.value = true
+  try {
+    const res = await fetch(assetUrl(l.file_url))
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const blob = await res.blob()
+    downloadBlob(blob, l.file_name || `hust3d-v${l.version_code}.apk`)
+    showSuccessToast('安装包已开始下载')
+  } catch (e) {
+    showFailToast('下载失败，请稍后重试')
+  } finally {
+    downloadingApp.value = false
+  }
+}
 
 // —— 检测更新：对比 App 已装 versionCode 与服务器最新版本 ——
 const appVersion = ref('')
@@ -147,6 +180,10 @@ onMounted(async () => {
   } catch (e) {
     /* 拦截器已处理 */
   }
+  // 最新 App 版本号（用于「下载 App」cell 显示）
+  getLatestAppRelease(true)
+    .then((l) => (appLatest.value = l))
+    .catch(() => {})
   try {
     const q = await getQuota()
     remaining.value = q.remaining

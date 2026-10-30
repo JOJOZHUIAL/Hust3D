@@ -36,6 +36,28 @@
           查询
         </van-button>
       </div>
+      <!-- 从图片识别（电脑端上传截图/照片；App 端调起系统相册选择器） -->
+      <div class="img-row">
+        <van-button
+          size="small"
+          plain
+          round
+          icon="photograph"
+          :loading="imgDecoding"
+          loading-text="识别中…"
+          @click="pickImage"
+        >
+          从图片识别条码
+        </van-button>
+        <input
+          ref="imgInput"
+          type="file"
+          accept="image/*"
+          class="img-input"
+          @change="onImagePicked"
+        />
+        <span class="img-tip">含条码的照片 / 截图均可</span>
+      </div>
       <!-- 模糊搜索匹配列表 -->
       <div v-if="searchHits.length" class="search-hits">
         <div
@@ -210,6 +232,7 @@ import { showConfirmDialog, showSuccessToast, showFailToast } from 'vant'
 import QRCode from 'qrcode'
 import { scanImageData } from '@undecaf/zbar-wasm'
 import { useAuthStore } from '../../store/auth'
+import { withOperator } from '../../utils/operator'
 import { getLanInfo } from '../../api/system'
 import { readTypeNotifications } from '../../api/notification'
 import { setUnread } from '../../store/notification'
@@ -360,6 +383,70 @@ function beep() {
   }
 }
 
+// —— 从图片识别条码（电脑上传照片/截图；App 端调起系统相册选择器） ——
+const imgInput = ref(null)
+const imgDecoding = ref(false)
+
+function pickImage() {
+  imgInput.value?.click()
+}
+
+async function decodeImageFile(file) {
+  // createImageBitmap 会按 EXIF 方向解码（手机竖拍的照片不会横倒）；
+  // 老内核不支持该参数时退化为普通解码
+  let bmp
+  try {
+    bmp = await createImageBitmap(file, { imageOrientation: 'from-image' })
+  } catch (e) {
+    bmp = await createImageBitmap(file)
+  }
+  // 手机原图 4000px 级别，缩到最大边 2000：保留一维码细节又控制解码耗时
+  const scale = Math.min(1, 2000 / Math.max(bmp.width, bmp.height))
+  const w = Math.max(1, Math.round(bmp.width * scale))
+  const h = Math.max(1, Math.round(bmp.height * scale))
+  const canvas = document.createElement('canvas')
+  canvas.width = w
+  canvas.height = h
+  const ctx = canvas.getContext('2d', { willReadFrequently: true })
+  ctx.drawImage(bmp, 0, 0, w, h)
+  bmp.close?.()
+  const imageData = ctx.getImageData(0, 0, w, h)
+  const symbols = await scanImageData(imageData)
+  const codes = symbols
+    .filter((s) => s.decode && s.decode())
+    .map((s) => s.decode().trim())
+    .filter(Boolean)
+  // 去重；本项目耗材条码是 15 位纯数字 CODE128，多个命中时优先它
+  return [...new Set(codes)].sort(
+    (a, b) => (/^\d{15}$/.test(b) ? 1 : 0) - (/^\d{15}$/.test(a) ? 1 : 0),
+  )
+}
+
+async function onImagePicked(e) {
+  const file = e.target?.files?.[0]
+  e.target.value = '' // 清空以允许下次选择同一张图
+  if (!file) return
+  imgDecoding.value = true
+  try {
+    const codes = await decodeImageFile(file)
+    if (!codes.length) {
+      showFailToast('未在图片中识别到条形码，请拍清楚条码后重试')
+      return
+    }
+    beep()
+    barcode.value = codes[0]
+    await doLookup()
+    if (codes.length > 1) {
+      showSuccessToast(`识别到 ${codes.length} 个条码，已使用第 1 个`)
+    }
+  } catch (e) {
+    console.error('[scan] 图片识别失败:', e)
+    showFailToast('图片识别失败：' + String(e?.message || e).slice(0, 60))
+  } finally {
+    imgDecoding.value = false
+  }
+}
+
 // —— 模糊搜索：输入即搜（名称/材质/颜色/条码） ——
 function onKeywordInput(v) {
   clearTimeout(searchTimer)
@@ -470,14 +557,22 @@ async function onOpen() {
   try {
     await showConfirmDialog({
       title: '拆封确认',
-      message: `确认拆封「${lookup.value.item.name}」吗？\n将以 ${auth.user?.name || '当前管理员'} 的名义记录拆封，库存 -1。`,
+      message: auth.user?.is_shared_admin
+        ? `确认拆封「${lookup.value.item.name}」吗？\n公共管理员账号需要填写实际操作人学号，库存 -1。`
+        : `确认拆封「${lookup.value.item.name}」吗？\n将以 ${auth.user?.name || '当前管理员'} 的名义记录拆封，库存 -1。`,
     })
   } catch (e) {
     return // 取消
   }
+  const op = await withOperator(auth, '记录拆封人', '公共管理员账号拆封耗材，请填写实际操作人学号')
+  if (!op.ok) return
   submitting.value = true
   try {
-    const item = await openConsumable({ barcode: form.value.barcode, note: openNote.value.trim() })
+    const item = await openConsumable({
+      barcode: form.value.barcode,
+      note: openNote.value.trim(),
+      operator_student_id: op.studentId,
+    })
     lookup.value = { exists: true, item }
     lastResultMsg.value = `拆封成功：${item.name} 剩余 ${item.quantity} ${item.unit}`
     openNote.value = ''
@@ -660,6 +755,19 @@ onUnmounted(() => {
   flex: 1;
   background: #f7f8fa;
   border-radius: 8px;
+}
+.img-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+.img-input {
+  display: none;
+}
+.img-tip {
+  font-size: 12px;
+  color: #969799;
 }
 .scan-msg {
   margin-top: 8px;

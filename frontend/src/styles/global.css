@@ -9,6 +9,29 @@
   box-sizing: border-box;
 }
 
+/* ===== 页面切换过渡（丝滑感的关键之一） ===== */
+.page-enter-active,
+.page-leave-active {
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  will-change: opacity, transform;
+}
+.page-enter-from {
+  opacity: 0;
+  transform: translateY(8px);
+}
+.page-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+/* 触摸按压反馈：可点行/卡片按下时有轻微变暗 */
+.todo-row:active,
+.hit-item:active,
+.hit-item:active,
+.notice-detail-link:active {
+  opacity: 0.75;
+}
+
 html,
 body {
   margin: 0;
